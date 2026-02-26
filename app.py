@@ -172,6 +172,8 @@ def _financial_to_dict(fa: FinancialAnalysis) -> dict:
             {
                 "period": m.period, "revenue": m.revenue,
                 "operating_profit": m.operating_profit,
+                "ordinary_profit": m.ordinary_profit,
+                "net_income": m.net_income,
                 "unit": m.unit, "trend_type": m.trend_type,
             }
             for m in fa.monthly_quarterly_trends
@@ -218,6 +220,8 @@ def _result_to_dict(r: AnalysisResult) -> dict:
                 "description": ki.description,
                 "risk_level": ki.risk_level,
                 "related_categories": ki.related_categories,
+                "ma_risk_implications": ki.ma_risk_implications,
+                "post_merger_solutions": ki.post_merger_solutions,
             }
             for ki in r.key_issues
         ],
@@ -249,6 +253,8 @@ def _dict_to_financial(d: dict) -> FinancialAnalysis:
             MonthlyQuarterlyTrend(
                 period=m.get("period", ""), revenue=m.get("revenue"),
                 operating_profit=m.get("operating_profit"),
+                ordinary_profit=m.get("ordinary_profit"),
+                net_income=m.get("net_income"),
                 unit=m.get("unit", "千円"),
                 trend_type=m.get("trend_type", "monthly"),
             )
@@ -299,6 +305,8 @@ def _dict_to_result(d: dict) -> AnalysisResult:
                 description=ki["description"],
                 risk_level=ki["risk_level"],
                 related_categories=ki["related_categories"],
+                ma_risk_implications=ki.get("ma_risk_implications", ""),
+                post_merger_solutions=ki.get("post_merger_solutions", ""),
             )
             for ki in d.get("key_issues", [])
         ],
@@ -542,8 +550,8 @@ elif result:
 
     st.markdown("---")
 
-    # タブで質問リスト・論点・財務分析を表示
-    tab1, tab2, tab3 = st.tabs(["💬 質問リスト", "📈 財務分析", "⚠️ 主要論点・リスク"])
+    # タブで質問リスト・論点・財務分析・企業サマリーを表示
+    tab1, tab2, tab3, tab4 = st.tabs(["💬 質問リスト", "📈 財務分析", "⚠️ 主要論点・リスク", "🏢 企業サマリー"])
 
     with tab1:
         all_cats = sorted(set(q.category_name for q in result.questions))
@@ -560,19 +568,21 @@ elif result:
 
         priority_order = {"A": 0, "B": 1, "C": 2}
         filtered.sort(
-            key=lambda q: (q.category_code, priority_order.get(q.priority, 3))
+            key=lambda q: (priority_order.get(q.priority, 3), q.category_code)
         )
 
-        current_cat = ""
-        for q in filtered:
-            if q.category_name != current_cat:
-                current_cat = q.category_name
-                st.markdown(f"### {current_cat}")
+        priority_labels = {"A": "🔴 優先度A（必須確認）", "B": "🟡 優先度B（重要）", "C": "🟢 優先度C（補足）"}
+        current_priority = ""
+        for i, q in enumerate(filtered, 1):
+            if q.priority != current_priority:
+                current_priority = q.priority
+                st.markdown(f"### {priority_labels.get(q.priority, q.priority)}")
 
             with st.expander(
-                f"[{q.priority}] {q.question[:80]}{'...' if len(q.question) > 80 else ''}",
+                f"Q{i}. [{q.category_code}] {q.question[:80]}{'...' if len(q.question) > 80 else ''}",
                 expanded=(q.priority == "A"),
             ):
+                st.markdown(f"**カテゴリ**: {q.category_name}")
                 st.markdown(f"**質問**: {q.question}")
                 st.markdown(f"**意図**: {q.intent}")
                 st.markdown(f"**背景**: {q.background}")
@@ -585,6 +595,21 @@ elif result:
 
     with tab2:
         import pandas as pd
+
+        def _fmt_number_cols(df: pd.DataFrame) -> pd.DataFrame:
+            """数値列をカンマ区切りフォーマットした文字列に変換"""
+            df_display = df.copy()
+            for col in df_display.columns:
+                if col == "期間":
+                    continue
+                try:
+                    numeric_vals = pd.to_numeric(df_display[col], errors="coerce")
+                    df_display[col] = numeric_vals.apply(
+                        lambda x: f"{int(x):,}" if pd.notna(x) else "-"
+                    )
+                except Exception:
+                    pass
+            return df_display
 
         fa = result.financial_analysis
         has_financial = (
@@ -614,7 +639,7 @@ elif result:
                         f"EBITDA（{unit}）": p.ebitda,
                     })
                 df_pl = pd.DataFrame(pl_data)
-                st.dataframe(df_pl, use_container_width=True, hide_index=True)
+                st.dataframe(_fmt_number_cols(df_pl), use_container_width=True, hide_index=True)
 
                 # グラフ表示（売上高と営業利益）
                 chart_cols = [c for c in df_pl.columns if c != "期間" and df_pl[c].notna().any()]
@@ -626,17 +651,22 @@ elif result:
             if fa.monthly_quarterly_trends:
                 trend_type = fa.monthly_quarterly_trends[0].trend_type
                 label = "月次推移" if trend_type == "monthly" else "四半期推移"
-                st.markdown(f"### {label}")
+                st.markdown(f"### {label}（{len(fa.monthly_quarterly_trends)}件）")
                 unit = fa.monthly_quarterly_trends[0].unit
                 mq_data = []
                 for m in fa.monthly_quarterly_trends:
-                    mq_data.append({
+                    row = {
                         "期間": m.period,
                         f"売上高（{unit}）": m.revenue,
                         f"営業利益（{unit}）": m.operating_profit,
-                    })
+                    }
+                    if m.ordinary_profit is not None:
+                        row[f"経常利益（{unit}）"] = m.ordinary_profit
+                    if m.net_income is not None:
+                        row[f"当期純利益（{unit}）"] = m.net_income
+                    mq_data.append(row)
                 df_mq = pd.DataFrame(mq_data)
-                st.dataframe(df_mq, use_container_width=True, hide_index=True)
+                st.dataframe(_fmt_number_cols(df_mq), use_container_width=True, hide_index=True)
 
                 chart_cols = [c for c in df_mq.columns if c != "期間" and df_mq[c].notna().any()]
                 if chart_cols:
@@ -658,7 +688,7 @@ elif result:
                         f"有利子負債（{unit}）": b.interest_bearing_debt,
                     })
                 df_bs = pd.DataFrame(bs_data)
-                st.dataframe(df_bs, use_container_width=True, hide_index=True)
+                st.dataframe(_fmt_number_cols(df_bs), use_container_width=True, hide_index=True)
 
                 chart_cols = [c for c in df_bs.columns if c != "期間" and df_bs[c].notna().any()]
                 if chart_cols:
@@ -681,16 +711,33 @@ elif result:
                         st.dataframe(df_km, use_container_width=True, hide_index=True)
 
     with tab3:
-        for ki in result.key_issues:
+        st.markdown(f"**{len(result.key_issues)}件** の主要論点・リスクを特定")
+        for i, ki in enumerate(result.key_issues, 1):
             risk_label = {"high": "🔴 高", "medium": "🟡 中", "low": "🟢 低"}.get(
                 ki.risk_level, ki.risk_level
             )
             with st.expander(
-                f"{risk_label} | {ki.title}",
+                f"{risk_label} | {i}. {ki.title}",
                 expanded=(ki.risk_level == "high"),
             ):
+                st.markdown("**概要・詳細**")
                 st.markdown(ki.description)
+                if ki.ma_risk_implications:
+                    st.markdown("---")
+                    st.markdown("**M&Aリスクへの影響**")
+                    st.markdown(ki.ma_risk_implications)
+                if ki.post_merger_solutions:
+                    st.markdown("---")
+                    st.markdown("**買収後の対策・解決策**")
+                    st.markdown(ki.post_merger_solutions)
                 if ki.related_categories:
+                    st.markdown("---")
                     st.markdown(
                         f"**関連カテゴリ**: {', '.join(ki.related_categories)}"
                     )
+
+    with tab4:
+        st.markdown("### 企業サマリー")
+        st.markdown(result.summary)
+        if result.company_url:
+            st.markdown(f"**企業URL**: [{result.company_url}]({result.company_url})")

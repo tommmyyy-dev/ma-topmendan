@@ -73,11 +73,11 @@ def export_to_excel(result: AnalysisResult) -> bytes:
         cell.border = _THIN_BORDER
         ws1.column_dimensions[get_column_letter(col_idx)].width = width
 
-    # 優先度順にソート (A > B > C)
+    # 優先度順にソート (A > B > C)、次にカテゴリ
     priority_order = {"A": 0, "B": 1, "C": 2}
     sorted_questions = sorted(
         result.questions,
-        key=lambda q: (q.category_code, priority_order.get(q.priority, 3)),
+        key=lambda q: (priority_order.get(q.priority, 3), q.category_code),
     )
 
     for i, q in enumerate(sorted_questions, 1):
@@ -111,6 +111,8 @@ def export_to_excel(result: AnalysisResult) -> bytes:
         ("論点", 30),
         ("詳細", 55),
         ("リスクレベル", 12),
+        ("M&Aリスクへの影響", 45),
+        ("買収後の対策・解決策", 45),
         ("関連カテゴリ", 20),
     ]
 
@@ -131,9 +133,11 @@ def export_to_excel(result: AnalysisResult) -> bytes:
         ws2.cell(row=row, column=2, value=ki.title)
         ws2.cell(row=row, column=3, value=ki.description)
         ws2.cell(row=row, column=4, value=risk_label)
-        ws2.cell(row=row, column=5, value=cat_names)
+        ws2.cell(row=row, column=5, value=getattr(ki, "ma_risk_implications", ""))
+        ws2.cell(row=row, column=6, value=getattr(ki, "post_merger_solutions", ""))
+        ws2.cell(row=row, column=7, value=cat_names)
 
-        for col_idx in range(1, 6):
+        for col_idx in range(1, 8):
             _apply_style(ws2, row, col_idx, font=_BODY_FONT)
 
         fill = _RISK_FILLS.get(ki.risk_level)
@@ -208,7 +212,10 @@ def export_to_excel(result: AnalysisResult) -> bytes:
             ws_fin.cell(row=fin_row, column=1).font = Font(name="Yu Gothic", bold=True, size=11)
             fin_row += 1
 
-            mq_headers = [("期間", 16), ("売上高", 16), ("営業利益", 16)]
+            mq_headers = [
+                ("期間", 16), ("売上高", 16), ("営業利益", 16),
+                ("経常利益", 16), ("当期純利益", 16),
+            ]
             for ci, (h, w) in enumerate(mq_headers, 1):
                 cell = ws_fin.cell(row=fin_row, column=ci, value=h)
                 cell.font = _HEADER_FONT
@@ -221,7 +228,9 @@ def export_to_excel(result: AnalysisResult) -> bytes:
                 ws_fin.cell(row=fin_row, column=1, value=m.period)
                 ws_fin.cell(row=fin_row, column=2, value=m.revenue)
                 ws_fin.cell(row=fin_row, column=3, value=m.operating_profit)
-                for ci in range(1, 4):
+                ws_fin.cell(row=fin_row, column=4, value=getattr(m, "ordinary_profit", None))
+                ws_fin.cell(row=fin_row, column=5, value=getattr(m, "net_income", None))
+                for ci in range(1, 6):
                     _apply_style(ws_fin, fin_row, ci, font=_BODY_FONT)
                     if ci >= 2:
                         ws_fin.cell(row=fin_row, column=ci).number_format = '#,##0'

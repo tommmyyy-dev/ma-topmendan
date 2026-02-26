@@ -83,15 +83,28 @@ def _build_analysis_prompt(
 上記の資料を分析し、以下の3つのセクションで出力してください。
 
 ■ セクション1: 企業サマリー
-対象企業の概要を400字程度で簡潔にまとめてください。
-事業内容、財務状況の要点、特徴的な点を含めてください。
+対象企業の概要を800〜1000字程度で詳細にまとめてください。
+以下の要素を必ず含めてください：
+- 事業内容・ビジネスモデルの概要
+- 主要な製品・サービス
+- 顧客基盤・主要取引先
+- 従業員数・組織体制（資料から読み取れる範囲で）
+- 財務状況の要点（売上規模、利益水準、財務健全性）
+- 成長性・市場でのポジション
+- M&A対象としての特徴・魅力
 
 ■ セクション2: 質問リスト
-以下のカテゴリ別に質問を作成してください（カテゴリあたり2〜6問目安）。
+以下のカテゴリ別に質問を作成してください。
+**重要**: 合計30問以上を目標にしてください。各カテゴリから最低3問、重要カテゴリ（BIZ, FIN, ORG, RSK）は5問以上。
+質問は優先度A→B→Cの順にソートして出力してください。
 {category_list}
 
 ■ セクション3: 主要論点・リスク
-資料を横断的に分析し、ディールの成否に関わる主要な論点・リスクを5〜10点挙げてください。
+資料を横断的に分析し、ディールの成否に関わる主要な論点・リスクを8〜15点挙げてください。
+各論点について以下を詳細に記載してください：
+- description: その論点がなぜ重要か、資料のどの情報から導かれたか（200字以上で詳細に）
+- ma_risk_implications: この論点がM&A（買収）にとってどのようなリスクをもたらすか具体的に（バリュエーションへの影響、PMI上の問題等）
+- post_merger_solutions: 買収後にこのリスクや論点に対してどのような対策・解決策が考えられるか（具体的な施策案）
 
 ■ セクション4: 財務分析
 資料から読み取れる財務情報を可能な限り詳細に抽出・整理してください。
@@ -101,9 +114,9 @@ def _build_analysis_prompt(
 financial_analysisセクションの数値には、必ずこの自動抽出データをそのまま使用してください。
 IMや他の資料の記載と異なる場合でも、CSV自動抽出データを優先してください。
 
-- 業績推移（P/L）: 売上高・営業利益・経常利益・当期純利益・EBITDAを年度別に。複数期間のCSVがある場合は全期間分出力。
-- 月次推移: CSVに月次データがある場合、12ヶ月分すべてをmonthly_quarterly_trendsに出力（省略しないこと）。
-- BS推移: 総資産・負債合計・純資産・現預金・有利子負債を年度別に
+- 業績推移（P/L）: 売上高・営業利益・経常利益・当期純利益・EBITDAを年度別に。複数期間のCSVがある場合は**必ず全期間分**をpl_trendsに出力。期間A/B/Cの表記はIMと照合して正しい会計年度名に変換。
+- 月次推移: CSVに月次データがある場合、**全期間・全月分**をmonthly_quarterly_trendsに出力（省略しないこと）。複数年度のCSVがあれば全年度分の月次データを含める。periodには「2024年9月」のように年月を記載。
+- BS推移: 総資産・負債合計・純資産・現預金・有利子負債を年度別に。複数期間分を必ず出力。
 - 主要財務指標: 営業利益率、EBITDA率、ROE、自己資本比率、D/Eレシオ、流動比率など
 - 財務分析コメント: トレンドの特徴、異常値、注意すべき点を記載
 
@@ -117,7 +130,7 @@ IMや他の資料の記載と異なる場合でも、CSV自動抽出データを
 
 {{
   "company_name": "対象企業名（資料から推定）",
-  "summary": "企業サマリー（400字程度）",
+  "summary": "企業サマリー（800〜1000字。事業内容・財務・組織・M&A魅力を詳細に記載）",
   "questions": [
     {{
       "category_code": "BIZ",
@@ -133,9 +146,11 @@ IMや他の資料の記載と異なる場合でも、CSV自動抽出データを
   "key_issues": [
     {{
       "title": "論点タイトル",
-      "description": "論点の詳細説明",
+      "description": "論点の詳細説明（200字以上。なぜ重要か、資料のどの情報から導かれたかを具体的に記載）",
       "risk_level": "high",
-      "related_categories": ["FIN", "RSK"]
+      "related_categories": ["FIN", "RSK"],
+      "ma_risk_implications": "この論点がM&Aにもたらすリスク（バリュエーション・PMI・統合後の経営への具体的影響）",
+      "post_merger_solutions": "買収後の対策・解決策の具体的アイデア（組織施策・事業施策・財務施策等）"
     }}
   ],
   "financial_analysis": {{
@@ -155,6 +170,8 @@ IMや他の資料の記載と異なる場合でも、CSV自動抽出データを
         "period": "2024年4月",
         "revenue": 85000,
         "operating_profit": 8000,
+        "ordinary_profit": 7500,
+        "net_income": 5000,
         "unit": "千円",
         "trend_type": "monthly"
       }}
@@ -213,6 +230,8 @@ class KeyIssue:
     description: str
     risk_level: str
     related_categories: list[str]
+    ma_risk_implications: str = ""
+    post_merger_solutions: str = ""
 
 
 @dataclass
@@ -231,6 +250,8 @@ class MonthlyQuarterlyTrend:
     period: str
     revenue: float | None = None
     operating_profit: float | None = None
+    ordinary_profit: float | None = None
+    net_income: float | None = None
     unit: str = "千円"
     trend_type: str = "monthly"  # monthly or quarterly
 
@@ -311,6 +332,8 @@ def _parse_financial_analysis(data: dict) -> FinancialAnalysis:
             period=m.get("period", ""),
             revenue=m.get("revenue"),
             operating_profit=m.get("operating_profit"),
+            ordinary_profit=m.get("ordinary_profit"),
+            net_income=m.get("net_income"),
             unit=m.get("unit", "千円"),
             trend_type=m.get("trend_type", "monthly"),
         )
@@ -369,6 +392,8 @@ def _parse_result(data: dict, input_tokens: int, output_tokens: int) -> Analysis
             description=ki.get("description", ""),
             risk_level=ki.get("risk_level", "medium"),
             related_categories=ki.get("related_categories", []),
+            ma_risk_implications=ki.get("ma_risk_implications", ""),
+            post_merger_solutions=ki.get("post_merger_solutions", ""),
         )
         for ki in data.get("key_issues", [])
     ]

@@ -513,7 +513,7 @@ _BS_ITEMS: list[tuple[str, list[str], tuple[int, ...]]] = [
 ]
 
 
-def _format_pl(fname: str, text: str) -> str:
+def _format_pl(fname: str, text: str, period_idx: int = 0) -> str:
     """損益計算書CSVから主要PLデータを抽出してフォーマット"""
     reader = csv.reader(io.StringIO(text))
     rows = list(reader)
@@ -530,7 +530,24 @@ def _format_pl(fname: str, text: str) -> str:
         elif h and h != "決算整理":
             month_cols.append((i, h))
 
-    lines = [f"■ 損益計算書（月次推移）- {fname}", "単位: 円", ""]
+    # 年間売上高を先に取得して期間識別用に使う
+    revenue_row = _find_row(rows, ["売上高合計", "売上高計"], cols=(0,))
+    annual_revenue = None
+    if revenue_row and total_col is not None and total_col < len(revenue_row):
+        annual_revenue = _parse_num(revenue_row[total_col])
+
+    period_label = chr(ord("A") + period_idx)
+    revenue_hint = ""
+    if annual_revenue is not None:
+        revenue_hint = f"（年間売上高: {_readable_yen(annual_revenue)}）"
+
+    lines = [
+        f"■ 損益計算書（月次推移）- 期間{period_label} {revenue_hint}",
+        f"  ファイル: {fname}",
+        "  単位: 円",
+        f"  月次データ: {month_cols[0][1]}〜{month_cols[-1][1]}（{len(month_cols)}ヶ月分）" if month_cols else "",
+        "",
+    ]
 
     # 年間合計（読みやすい単位付き）
     lines.append("【年間合計】")
@@ -551,7 +568,7 @@ def _format_pl(fname: str, text: str) -> str:
 
     # 月次推移（全PL項目）
     lines.append("")
-    lines.append("【月次推移】")
+    lines.append("【月次推移（全月分）】")
     # ヘッダー行
     month_labels = [mlabel for _, mlabel in month_cols]
     lines.append("科目 | " + " | ".join(month_labels))
@@ -568,7 +585,7 @@ def _format_pl(fname: str, text: str) -> str:
     return "\n".join(lines)
 
 
-def _format_bs(fname: str, text: str) -> str:
+def _format_bs(fname: str, text: str, period_idx: int = 0) -> str:
     """貸借対照表CSVから主要BSデータを抽出してフォーマット"""
     reader = csv.reader(io.StringIO(text))
     rows = list(reader)
@@ -585,10 +602,28 @@ def _format_bs(fname: str, text: str) -> str:
     if not month_cols:
         return ""
 
+    # 総資産を先に取得して期間識別用に使う
+    asset_row = _find_row(rows, ["資産の部合計"], cols=(0,))
     latest_col, latest_label = month_cols[-1]
-    lines = [f"■ 貸借対照表 - {fname}", "単位: 円", f"基準日: {latest_label}", ""]
+    total_assets = None
+    if asset_row and latest_col < len(asset_row):
+        total_assets = _parse_num(asset_row[latest_col])
 
-    lines.append("【残高】")
+    period_label = chr(ord("A") + period_idx)
+    assets_hint = ""
+    if total_assets is not None:
+        assets_hint = f"（直近総資産: {_readable_yen(total_assets)}）"
+
+    lines = [
+        f"■ 貸借対照表 - 期間{period_label} {assets_hint}",
+        f"  ファイル: {fname}",
+        "  単位: 円",
+        f"  基準日: {latest_label}",
+        f"  月次データ: {month_cols[0][1]}〜{month_cols[-1][1]}（{len(month_cols)}ヶ月分）" if month_cols else "",
+        "",
+    ]
+
+    lines.append("【直近残高】")
     found_any = False
     for display, patterns, cols in _BS_ITEMS:
         row = _find_row(rows, patterns, cols=cols)
@@ -601,29 +636,41 @@ def _format_bs(fname: str, text: str) -> str:
     if not found_any:
         return ""
 
-    # 月次推移（総資産・純資産・現預金）
-    for item_display, item_patterns, item_cols in [
-        ("総資産", ["資産の部合計"], (0,)),
-        ("純資産", ["純資産の部合計"], (0,)),
-        ("現預金", ["現金及び預金合計", "現金及び預金", "現金及預金合計"], (0, 1)),
-    ]:
+    # 月次推移（全BS主要項目）
+    lines.append("")
+    lines.append("【月次推移（全月分）】")
+    month_labels = [mlabel for _, mlabel in month_cols]
+    lines.append("科目 | " + " | ".join(month_labels))
+    for item_display, item_patterns, item_cols in _BS_ITEMS:
         row = _find_row(rows, item_patterns, cols=item_cols)
         if not row:
             continue
-        parts = []
-        for ci, mlabel in month_cols:
+        vals = []
+        for ci, _ in month_cols:
             v = _parse_num(row[ci]) if ci < len(row) else None
-            parts.append(f"{mlabel}={v:,}" if v is not None else f"{mlabel}=-")
-        lines.append("")
-        lines.append(f"月次{item_display}: {' / '.join(parts)}")
+            vals.append(f"{v:,}" if v is not None else "-")
+        lines.append(f"{item_display} | " + " | ".join(vals))
 
     return "\n".join(lines)
 
 
 def extract_financial_summary(files: list[tuple[str, bytes]]) -> str:
     """財務CSVから主要データを自動抽出し、LLM用の構造化テキストで返す"""
-    parts: list[str] = []
+    pl_parts: list[str] = []
+    bs_parts: list[str] = []
+    pl_idx = 0
+    bs_idx = 0
+
+    # 重複ファイルを除外（同じファイル名のものは最初のみ使用）
+    seen_names: set[str] = set()
+    unique_files: list[tuple[str, bytes]] = []
     for fname, data in files:
+        base = fname.replace(" (1)", "").replace(" (2)", "").strip()
+        if base not in seen_names:
+            seen_names.add(base)
+            unique_files.append((fname, data))
+
+    for fname, data in unique_files:
         if not fname.lower().endswith(".csv"):
             continue
         try:
@@ -631,20 +678,33 @@ def extract_financial_summary(files: list[tuple[str, bytes]]) -> str:
         except Exception:
             continue
         if "損益" in fname:
-            s = _format_pl(fname, text)
+            s = _format_pl(fname, text, period_idx=pl_idx)
             if s:
-                parts.append(s)
+                pl_parts.append(s)
+                pl_idx += 1
         elif "貸借" in fname:
-            s = _format_bs(fname, text)
+            s = _format_bs(fname, text, period_idx=bs_idx)
             if s:
-                parts.append(s)
+                bs_parts.append(s)
+                bs_idx += 1
 
+    parts = pl_parts + bs_parts
     if not parts:
         return ""
+
+    period_note = ""
+    if pl_idx >= 2 or bs_idx >= 2:
+        period_note = (
+            "\n※ 複数期間のCSVデータがあります。期間A, 期間B, ... は異なる会計年度です。\n"
+            "  IMや他の資料と照合して正しい会計年度（例: 2023年8月期、2024年8月期）を特定してください。\n"
+            "  売上高の規模や総資産の大きさから時系列の前後関係を推定できます。\n"
+        )
+
     return (
         "【財務データ（CSVから自動抽出・正確な数値）】\n"
         "以下は財務CSVからプログラムで正確に抽出した数値です。\n"
         "financial_analysisセクションにはこの数値をそのまま使用してください。\n"
-        "IMの記載と異なる場合でもCSVデータを優先してください。\n\n"
+        "IMの記載と異なる場合でもCSVデータを優先してください。\n"
+        f"{period_note}\n"
         + "\n\n".join(parts)
     )
