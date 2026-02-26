@@ -708,11 +708,6 @@ elif result:
                 df_bs = pd.DataFrame(bs_data)
                 st.dataframe(_fmt_number_cols(df_bs), use_container_width=True, hide_index=True)
 
-                chart_cols = [c for c in df_bs.columns if c != "期間" and df_bs[c].notna().any()]
-                if chart_cols:
-                    df_chart = df_bs.set_index("期間")[chart_cols].apply(pd.to_numeric, errors="coerce")
-                    st.bar_chart(df_chart)
-
             # --- 主要財務指標 (LLM) ---
             if fa.key_metrics:
                 st.markdown("### 主要財務指標")

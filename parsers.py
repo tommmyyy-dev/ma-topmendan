@@ -716,18 +716,85 @@ def extract_financial_data(files: list[tuple[str, bytes]]) -> ExtractedFinancial
     # 総資産昇順でソート
     bs_list.sort(key=lambda b: b.total_assets or 0)
 
-    # デフォルトの期間ラベルを生成（売上高ベース）
-    for i, pl in enumerate(pl_list):
-        rev_str = _readable_yen(pl.revenue) if pl.revenue else "不明"
-        month_str = f"{pl.fiscal_month}月期" if pl.fiscal_month else ""
-        pl.period_label = f"第{i+1}期 ({month_str} 売上{rev_str})"
-
-    for i, bs in enumerate(bs_list):
-        asset_str = _readable_yen(bs.total_assets) if bs.total_assets else "不明"
-        month_str = f"{bs.fiscal_month}月期" if bs.fiscal_month else ""
-        bs.period_label = f"第{i+1}期 ({month_str} 総資産{asset_str})"
+    # 決算月と現在日付から会計年度を自動推定
+    _assign_fiscal_year_labels(pl_list, bs_list)
 
     return ExtractedFinancials(pl_list=pl_list, bs_list=bs_list)
+
+
+def _assign_fiscal_year_labels(
+    pl_list: list[ExtractedPL],
+    bs_list: list[ExtractedBS],
+) -> None:
+    """決算月と現在日付から会計年度ラベルを自動推定して設定する。
+
+    ロジック:
+    - 決算月をCSVヘッダから検出（例: 8月 → 8月期）
+    - 現在の日付から直近の完了済み会計年度を算出
+    - CSVは売上高/総資産の昇順にソート済み = 最も新しい年度が末尾
+    - 末尾から逆算して各CSVに年度ラベルを付与
+    """
+    from datetime import date
+
+    today = date.today()
+
+    # P/Lの年度ラベル
+    if pl_list:
+        fiscal_month = 0
+        for pl in pl_list:
+            if pl.fiscal_month:
+                try:
+                    fiscal_month = int(pl.fiscal_month)
+                except ValueError:
+                    pass
+                if fiscal_month:
+                    break
+
+        if fiscal_month:
+            # 直近の完了済み会計年度を計算
+            # 例: 決算月=8, 現在=2026年2月 → 直近完了年度は2025年8月期
+            # 例: 決算月=3, 現在=2026年2月 → 直近完了年度は2025年3月期
+            if today.month > fiscal_month:
+                most_recent_year = today.year
+            else:
+                most_recent_year = today.year - 1
+
+            n = len(pl_list)
+            for i, pl in enumerate(pl_list):
+                year = most_recent_year - (n - 1 - i)
+                pl.period_label = f"{year}年{fiscal_month}月期"
+        else:
+            # 決算月不明の場合はフォールバック
+            for i, pl in enumerate(pl_list):
+                rev_str = _readable_yen(pl.revenue) if pl.revenue else "不明"
+                pl.period_label = f"第{i+1}期 (売上{rev_str})"
+
+    # B/Sの年度ラベル
+    if bs_list:
+        fiscal_month = 0
+        for bs in bs_list:
+            if bs.fiscal_month:
+                try:
+                    fiscal_month = int(bs.fiscal_month)
+                except ValueError:
+                    pass
+                if fiscal_month:
+                    break
+
+        if fiscal_month:
+            if today.month > fiscal_month:
+                most_recent_year = today.year
+            else:
+                most_recent_year = today.year - 1
+
+            n = len(bs_list)
+            for i, bs in enumerate(bs_list):
+                year = most_recent_year - (n - 1 - i)
+                bs.period_label = f"{year}年{fiscal_month}月期"
+        else:
+            for i, bs in enumerate(bs_list):
+                asset_str = _readable_yen(bs.total_assets) if bs.total_assets else "不明"
+                bs.period_label = f"第{i+1}期 (総資産{asset_str})"
 
 
 def apply_period_labels_from_llm(
