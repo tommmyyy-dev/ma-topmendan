@@ -142,7 +142,148 @@ def export_to_excel(result: AnalysisResult) -> bytes:
 
     ws2.freeze_panes = "A2"
 
-    # ---- Sheet 3: 企業サマリー ----
+    # ---- Sheet 3: 財務分析 ----
+    fa = result.financial_analysis
+    has_financial = (
+        fa.pl_trends or fa.monthly_quarterly_trends or fa.bs_trends or fa.key_metrics
+    )
+
+    if has_financial:
+        ws_fin = wb.create_sheet("財務分析")
+        fin_row = 1
+
+        # --- 財務コメント ---
+        if fa.financial_comments:
+            ws_fin.cell(row=fin_row, column=1, value="財務分析コメント")
+            ws_fin.cell(row=fin_row, column=1).font = Font(name="Yu Gothic", bold=True, size=11)
+            fin_row += 1
+            ws_fin.cell(row=fin_row, column=1, value=fa.financial_comments)
+            ws_fin.cell(row=fin_row, column=1).font = _BODY_FONT
+            ws_fin.cell(row=fin_row, column=1).alignment = _WRAP_ALIGNMENT
+            ws_fin.merge_cells(start_row=fin_row, start_column=1, end_row=fin_row, end_column=7)
+            fin_row += 2
+
+        # --- 業績推移 (P/L) ---
+        if fa.pl_trends:
+            unit = fa.pl_trends[0].unit
+            ws_fin.cell(row=fin_row, column=1, value=f"業績推移（P/L）　単位: {unit}")
+            ws_fin.cell(row=fin_row, column=1).font = Font(name="Yu Gothic", bold=True, size=11)
+            fin_row += 1
+
+            pl_headers = [
+                ("期間", 16), ("売上高", 16), ("営業利益", 16),
+                ("経常利益", 16), ("当期純利益", 16), ("EBITDA", 16),
+            ]
+            for ci, (h, w) in enumerate(pl_headers, 1):
+                cell = ws_fin.cell(row=fin_row, column=ci, value=h)
+                cell.font = _HEADER_FONT
+                cell.fill = _HEADER_FILL
+                cell.alignment = _WRAP_ALIGNMENT
+                cell.border = _THIN_BORDER
+                ws_fin.column_dimensions[get_column_letter(ci)].width = max(
+                    ws_fin.column_dimensions[get_column_letter(ci)].width or 0, w
+                )
+            fin_row += 1
+
+            for p in fa.pl_trends:
+                ws_fin.cell(row=fin_row, column=1, value=p.period)
+                ws_fin.cell(row=fin_row, column=2, value=p.revenue)
+                ws_fin.cell(row=fin_row, column=3, value=p.operating_profit)
+                ws_fin.cell(row=fin_row, column=4, value=p.ordinary_profit)
+                ws_fin.cell(row=fin_row, column=5, value=p.net_income)
+                ws_fin.cell(row=fin_row, column=6, value=p.ebitda)
+                for ci in range(1, 7):
+                    _apply_style(ws_fin, fin_row, ci, font=_BODY_FONT)
+                    if ci >= 2:
+                        ws_fin.cell(row=fin_row, column=ci).number_format = '#,##0'
+                fin_row += 1
+            fin_row += 1
+
+        # --- 月次/四半期推移 ---
+        if fa.monthly_quarterly_trends:
+            trend_type = fa.monthly_quarterly_trends[0].trend_type
+            label = "月次推移" if trend_type == "monthly" else "四半期推移"
+            unit = fa.monthly_quarterly_trends[0].unit
+            ws_fin.cell(row=fin_row, column=1, value=f"{label}　単位: {unit}")
+            ws_fin.cell(row=fin_row, column=1).font = Font(name="Yu Gothic", bold=True, size=11)
+            fin_row += 1
+
+            mq_headers = [("期間", 16), ("売上高", 16), ("営業利益", 16)]
+            for ci, (h, w) in enumerate(mq_headers, 1):
+                cell = ws_fin.cell(row=fin_row, column=ci, value=h)
+                cell.font = _HEADER_FONT
+                cell.fill = _HEADER_FILL
+                cell.alignment = _WRAP_ALIGNMENT
+                cell.border = _THIN_BORDER
+            fin_row += 1
+
+            for m in fa.monthly_quarterly_trends:
+                ws_fin.cell(row=fin_row, column=1, value=m.period)
+                ws_fin.cell(row=fin_row, column=2, value=m.revenue)
+                ws_fin.cell(row=fin_row, column=3, value=m.operating_profit)
+                for ci in range(1, 4):
+                    _apply_style(ws_fin, fin_row, ci, font=_BODY_FONT)
+                    if ci >= 2:
+                        ws_fin.cell(row=fin_row, column=ci).number_format = '#,##0'
+                fin_row += 1
+            fin_row += 1
+
+        # --- BS推移 ---
+        if fa.bs_trends:
+            unit = fa.bs_trends[0].unit
+            ws_fin.cell(row=fin_row, column=1, value=f"BS推移（貸借対照表）　単位: {unit}")
+            ws_fin.cell(row=fin_row, column=1).font = Font(name="Yu Gothic", bold=True, size=11)
+            fin_row += 1
+
+            bs_headers = [
+                ("期間", 16), ("総資産", 16), ("負債合計", 16),
+                ("純資産", 16), ("現預金", 16), ("有利子負債", 16),
+            ]
+            for ci, (h, w) in enumerate(bs_headers, 1):
+                cell = ws_fin.cell(row=fin_row, column=ci, value=h)
+                cell.font = _HEADER_FONT
+                cell.fill = _HEADER_FILL
+                cell.alignment = _WRAP_ALIGNMENT
+                cell.border = _THIN_BORDER
+            fin_row += 1
+
+            for b in fa.bs_trends:
+                ws_fin.cell(row=fin_row, column=1, value=b.period)
+                ws_fin.cell(row=fin_row, column=2, value=b.total_assets)
+                ws_fin.cell(row=fin_row, column=3, value=b.total_liabilities)
+                ws_fin.cell(row=fin_row, column=4, value=b.net_assets)
+                ws_fin.cell(row=fin_row, column=5, value=b.cash_and_deposits)
+                ws_fin.cell(row=fin_row, column=6, value=b.interest_bearing_debt)
+                for ci in range(1, 7):
+                    _apply_style(ws_fin, fin_row, ci, font=_BODY_FONT)
+                    if ci >= 2:
+                        ws_fin.cell(row=fin_row, column=ci).number_format = '#,##0'
+                fin_row += 1
+            fin_row += 1
+
+        # --- 主要財務指標 ---
+        if fa.key_metrics:
+            ws_fin.cell(row=fin_row, column=1, value="主要財務指標")
+            ws_fin.cell(row=fin_row, column=1).font = Font(name="Yu Gothic", bold=True, size=11)
+            fin_row += 1
+
+            for km in fa.key_metrics:
+                ws_fin.cell(row=fin_row, column=1, value=km.metric_name)
+                ws_fin.cell(row=fin_row, column=1).font = Font(name="Yu Gothic", bold=True, size=10)
+                ws_fin.cell(row=fin_row, column=1).border = _THIN_BORDER
+                for vi, v in enumerate(km.values):
+                    ci = vi + 2
+                    cell = ws_fin.cell(row=fin_row, column=ci)
+                    cell.value = f"{v.get('period', '')}: {v.get('value', '')}"
+                    cell.font = _BODY_FONT
+                    cell.alignment = _WRAP_ALIGNMENT
+                    cell.border = _THIN_BORDER
+                fin_row += 1
+            fin_row += 1
+
+        ws_fin.freeze_panes = "A2"
+
+    # ---- Sheet 4: 企業サマリー ----
     ws3 = wb.create_sheet("企業サマリー")
     ws3.column_dimensions["A"].width = 15
     ws3.column_dimensions["B"].width = 80

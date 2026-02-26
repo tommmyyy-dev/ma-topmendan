@@ -10,7 +10,12 @@ from pathlib import Path
 import streamlit as st
 from dotenv import load_dotenv
 
-from analyzer import PROVIDERS, AnalysisResult, analyze_documents
+from analyzer import (
+    PROVIDERS,
+    AnalysisResult,
+    FinancialAnalysis,
+    analyze_documents,
+)
 from excel_export import export_to_excel
 from parsers import SUPPORTED_EXTENSIONS, ParsedDocument, parse_file
 
@@ -152,6 +157,43 @@ def _save_threads(threads: dict):
     )
 
 
+def _financial_to_dict(fa: FinancialAnalysis) -> dict:
+    return {
+        "pl_trends": [
+            {
+                "period": p.period, "revenue": p.revenue,
+                "operating_profit": p.operating_profit,
+                "ordinary_profit": p.ordinary_profit,
+                "net_income": p.net_income, "ebitda": p.ebitda, "unit": p.unit,
+            }
+            for p in fa.pl_trends
+        ],
+        "monthly_quarterly_trends": [
+            {
+                "period": m.period, "revenue": m.revenue,
+                "operating_profit": m.operating_profit,
+                "unit": m.unit, "trend_type": m.trend_type,
+            }
+            for m in fa.monthly_quarterly_trends
+        ],
+        "bs_trends": [
+            {
+                "period": b.period, "total_assets": b.total_assets,
+                "total_liabilities": b.total_liabilities,
+                "net_assets": b.net_assets,
+                "cash_and_deposits": b.cash_and_deposits,
+                "interest_bearing_debt": b.interest_bearing_debt, "unit": b.unit,
+            }
+            for b in fa.bs_trends
+        ],
+        "key_metrics": [
+            {"metric_name": km.metric_name, "values": km.values}
+            for km in fa.key_metrics
+        ],
+        "financial_comments": fa.financial_comments,
+    }
+
+
 def _result_to_dict(r: AnalysisResult) -> dict:
     return {
         "company_name": r.company_name,
@@ -179,10 +221,56 @@ def _result_to_dict(r: AnalysisResult) -> dict:
             }
             for ki in r.key_issues
         ],
+        "financial_analysis": _financial_to_dict(r.financial_analysis),
         "input_tokens": r.input_tokens,
         "output_tokens": r.output_tokens,
         "created_at": datetime.now().isoformat(),
     }
+
+
+def _dict_to_financial(d: dict) -> FinancialAnalysis:
+    from analyzer import BSTrend, KeyMetric, MonthlyQuarterlyTrend, PLTrend
+
+    fa = d.get("financial_analysis", {})
+    if not fa:
+        return FinancialAnalysis()
+    return FinancialAnalysis(
+        pl_trends=[
+            PLTrend(
+                period=p.get("period", ""), revenue=p.get("revenue"),
+                operating_profit=p.get("operating_profit"),
+                ordinary_profit=p.get("ordinary_profit"),
+                net_income=p.get("net_income"), ebitda=p.get("ebitda"),
+                unit=p.get("unit", "千円"),
+            )
+            for p in fa.get("pl_trends", [])
+        ],
+        monthly_quarterly_trends=[
+            MonthlyQuarterlyTrend(
+                period=m.get("period", ""), revenue=m.get("revenue"),
+                operating_profit=m.get("operating_profit"),
+                unit=m.get("unit", "千円"),
+                trend_type=m.get("trend_type", "monthly"),
+            )
+            for m in fa.get("monthly_quarterly_trends", [])
+        ],
+        bs_trends=[
+            BSTrend(
+                period=b.get("period", ""), total_assets=b.get("total_assets"),
+                total_liabilities=b.get("total_liabilities"),
+                net_assets=b.get("net_assets"),
+                cash_and_deposits=b.get("cash_and_deposits"),
+                interest_bearing_debt=b.get("interest_bearing_debt"),
+                unit=b.get("unit", "千円"),
+            )
+            for b in fa.get("bs_trends", [])
+        ],
+        key_metrics=[
+            KeyMetric(metric_name=km.get("metric_name", ""), values=km.get("values", []))
+            for km in fa.get("key_metrics", [])
+        ],
+        financial_comments=fa.get("financial_comments", ""),
+    )
 
 
 def _dict_to_result(d: dict) -> AnalysisResult:
@@ -214,6 +302,7 @@ def _dict_to_result(d: dict) -> AnalysisResult:
             )
             for ki in d.get("key_issues", [])
         ],
+        financial_analysis=_dict_to_financial(d),
         input_tokens=d.get("input_tokens", 0),
         output_tokens=d.get("output_tokens", 0),
     )
@@ -446,8 +535,8 @@ elif result:
 
     st.markdown("---")
 
-    # タブで質問リストと論点を表示
-    tab1, tab2 = st.tabs(["💬 質問リスト", "⚠️ 主要論点・リスク"])
+    # タブで質問リスト・論点・財務分析を表示
+    tab1, tab2, tab3 = st.tabs(["💬 質問リスト", "📈 財務分析", "⚠️ 主要論点・リスク"])
 
     with tab1:
         all_cats = sorted(set(q.category_name for q in result.questions))
@@ -488,6 +577,103 @@ elif result:
                         st.markdown(f"  - {fp}")
 
     with tab2:
+        import pandas as pd
+
+        fa = result.financial_analysis
+        has_financial = (
+            fa.pl_trends or fa.monthly_quarterly_trends or fa.bs_trends or fa.key_metrics
+        )
+
+        if not has_financial:
+            st.info("財務データが資料から抽出できませんでした。財務諸表・試算表を含む資料をアップロードすると、ここに財務分析が表示されます。")
+        else:
+            # --- 財務コメント ---
+            if fa.financial_comments:
+                st.markdown("### 財務分析サマリー")
+                st.info(fa.financial_comments)
+
+            # --- 業績推移 (P/L) ---
+            if fa.pl_trends:
+                st.markdown("### 業績推移（P/L）")
+                unit = fa.pl_trends[0].unit if fa.pl_trends else "千円"
+                pl_data = []
+                for p in fa.pl_trends:
+                    pl_data.append({
+                        "期間": p.period,
+                        f"売上高（{unit}）": p.revenue,
+                        f"営業利益（{unit}）": p.operating_profit,
+                        f"経常利益（{unit}）": p.ordinary_profit,
+                        f"当期純利益（{unit}）": p.net_income,
+                        f"EBITDA（{unit}）": p.ebitda,
+                    })
+                df_pl = pd.DataFrame(pl_data)
+                st.dataframe(df_pl, use_container_width=True, hide_index=True)
+
+                # グラフ表示（売上高と営業利益）
+                chart_cols = [c for c in df_pl.columns if c != "期間" and df_pl[c].notna().any()]
+                if chart_cols:
+                    df_chart = df_pl.set_index("期間")[chart_cols].apply(pd.to_numeric, errors="coerce")
+                    st.bar_chart(df_chart)
+
+            # --- 月次/四半期推移 ---
+            if fa.monthly_quarterly_trends:
+                trend_type = fa.monthly_quarterly_trends[0].trend_type
+                label = "月次推移" if trend_type == "monthly" else "四半期推移"
+                st.markdown(f"### {label}")
+                unit = fa.monthly_quarterly_trends[0].unit
+                mq_data = []
+                for m in fa.monthly_quarterly_trends:
+                    mq_data.append({
+                        "期間": m.period,
+                        f"売上高（{unit}）": m.revenue,
+                        f"営業利益（{unit}）": m.operating_profit,
+                    })
+                df_mq = pd.DataFrame(mq_data)
+                st.dataframe(df_mq, use_container_width=True, hide_index=True)
+
+                chart_cols = [c for c in df_mq.columns if c != "期間" and df_mq[c].notna().any()]
+                if chart_cols:
+                    df_chart = df_mq.set_index("期間")[chart_cols].apply(pd.to_numeric, errors="coerce")
+                    st.line_chart(df_chart)
+
+            # --- BS推移 ---
+            if fa.bs_trends:
+                st.markdown("### BS推移（貸借対照表）")
+                unit = fa.bs_trends[0].unit
+                bs_data = []
+                for b in fa.bs_trends:
+                    bs_data.append({
+                        "期間": b.period,
+                        f"総資産（{unit}）": b.total_assets,
+                        f"負債合計（{unit}）": b.total_liabilities,
+                        f"純資産（{unit}）": b.net_assets,
+                        f"現預金（{unit}）": b.cash_and_deposits,
+                        f"有利子負債（{unit}）": b.interest_bearing_debt,
+                    })
+                df_bs = pd.DataFrame(bs_data)
+                st.dataframe(df_bs, use_container_width=True, hide_index=True)
+
+                chart_cols = [c for c in df_bs.columns if c != "期間" and df_bs[c].notna().any()]
+                if chart_cols:
+                    df_chart = df_bs.set_index("期間")[chart_cols].apply(pd.to_numeric, errors="coerce")
+                    st.bar_chart(df_chart)
+
+            # --- 主要財務指標 ---
+            if fa.key_metrics:
+                st.markdown("### 主要財務指標")
+                for km in fa.key_metrics:
+                    if km.values:
+                        metric_data = []
+                        for v in km.values:
+                            metric_data.append({
+                                "期間": v.get("period", ""),
+                                km.metric_name: v.get("value", ""),
+                            })
+                        df_km = pd.DataFrame(metric_data)
+                        st.markdown(f"**{km.metric_name}**")
+                        st.dataframe(df_km, use_container_width=True, hide_index=True)
+
+    with tab3:
         for ki in result.key_issues:
             risk_label = {"high": "🔴 高", "medium": "🟡 中", "low": "🟢 低"}.get(
                 ki.risk_level, ki.risk_level

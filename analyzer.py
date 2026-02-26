@@ -88,6 +88,17 @@ def _build_analysis_prompt(
 ■ セクション3: 主要論点・リスク
 資料を横断的に分析し、ディールの成否に関わる主要な論点・リスクを5〜10点挙げてください。
 
+■ セクション4: 財務分析
+資料から読み取れる財務情報を可能な限り詳細に抽出・整理してください。
+- 業績推移（P/L）: 売上高・営業利益・経常利益・当期純利益・EBITDAを年度別に
+- 月次または四半期推移: 直近の月次売上高・営業利益の推移（月次が無ければ四半期で）
+- BS推移: 総資産・負債合計・純資産・現預金・有利子負債を年度別に
+- 主要財務指標: 営業利益率、EBITDA率、ROE、自己資本比率、D/Eレシオ、流動比率など
+- 財務分析コメント: トレンドの特徴、異常値、注意すべき点を記載
+
+※ 資料に該当データが無い項目はnullにしてください。
+※ 金額の単位は資料中の表記に合わせ、unitフィールドに記載してください（例: "千円", "百万円"）。
+
 【出力フォーマット】
 必ず以下のJSON形式で出力してください。JSON以外のテキストは含めないでください。
 
@@ -113,7 +124,50 @@ def _build_analysis_prompt(
       "risk_level": "high",
       "related_categories": ["FIN", "RSK"]
     }}
-  ]
+  ],
+  "financial_analysis": {{
+    "pl_trends": [
+      {{
+        "period": "2023年3月期",
+        "revenue": 1000000,
+        "operating_profit": 100000,
+        "ordinary_profit": 95000,
+        "net_income": 65000,
+        "ebitda": 120000,
+        "unit": "千円"
+      }}
+    ],
+    "monthly_quarterly_trends": [
+      {{
+        "period": "2024年4月",
+        "revenue": 85000,
+        "operating_profit": 8000,
+        "unit": "千円",
+        "trend_type": "monthly"
+      }}
+    ],
+    "bs_trends": [
+      {{
+        "period": "2023年3月期",
+        "total_assets": 5000000,
+        "total_liabilities": 3000000,
+        "net_assets": 2000000,
+        "cash_and_deposits": 500000,
+        "interest_bearing_debt": 800000,
+        "unit": "千円"
+      }}
+    ],
+    "key_metrics": [
+      {{
+        "metric_name": "営業利益率",
+        "values": [
+          {{"period": "2022年3月期", "value": "10.0%"}},
+          {{"period": "2023年3月期", "value": "12.5%"}}
+        ]
+      }}
+    ],
+    "financial_comments": "財務分析に関する総合コメント（トレンド、異常値、注意点など）"
+  }}
 }}
 
 priorityは以下の基準で付与してください：
@@ -149,11 +203,58 @@ class KeyIssue:
 
 
 @dataclass
+class PLTrend:
+    period: str
+    revenue: float | None = None
+    operating_profit: float | None = None
+    ordinary_profit: float | None = None
+    net_income: float | None = None
+    ebitda: float | None = None
+    unit: str = "千円"
+
+
+@dataclass
+class MonthlyQuarterlyTrend:
+    period: str
+    revenue: float | None = None
+    operating_profit: float | None = None
+    unit: str = "千円"
+    trend_type: str = "monthly"  # monthly or quarterly
+
+
+@dataclass
+class BSTrend:
+    period: str
+    total_assets: float | None = None
+    total_liabilities: float | None = None
+    net_assets: float | None = None
+    cash_and_deposits: float | None = None
+    interest_bearing_debt: float | None = None
+    unit: str = "千円"
+
+
+@dataclass
+class KeyMetric:
+    metric_name: str
+    values: list[dict]  # [{"period": "...", "value": "..."}]
+
+
+@dataclass
+class FinancialAnalysis:
+    pl_trends: list[PLTrend] = field(default_factory=list)
+    monthly_quarterly_trends: list[MonthlyQuarterlyTrend] = field(default_factory=list)
+    bs_trends: list[BSTrend] = field(default_factory=list)
+    key_metrics: list[KeyMetric] = field(default_factory=list)
+    financial_comments: str = ""
+
+
+@dataclass
 class AnalysisResult:
     company_name: str
     summary: str
     questions: list[Question]
     key_issues: list[KeyIssue]
+    financial_analysis: FinancialAnalysis = field(default_factory=FinancialAnalysis)
     raw_json: dict = field(default_factory=dict)
     input_tokens: int = 0
     output_tokens: int = 0
@@ -171,6 +272,66 @@ def _extract_json(raw_text: str) -> dict:
     elif "```" in text:
         text = text.split("```")[1].split("```")[0].strip()
     return json.loads(text)
+
+
+def _parse_financial_analysis(data: dict) -> FinancialAnalysis:
+    """financial_analysisセクションをパースする"""
+    fa = data.get("financial_analysis", {})
+    if not fa:
+        return FinancialAnalysis()
+
+    pl_trends = [
+        PLTrend(
+            period=p.get("period", ""),
+            revenue=p.get("revenue"),
+            operating_profit=p.get("operating_profit"),
+            ordinary_profit=p.get("ordinary_profit"),
+            net_income=p.get("net_income"),
+            ebitda=p.get("ebitda"),
+            unit=p.get("unit", "千円"),
+        )
+        for p in fa.get("pl_trends", [])
+    ]
+
+    mq_trends = [
+        MonthlyQuarterlyTrend(
+            period=m.get("period", ""),
+            revenue=m.get("revenue"),
+            operating_profit=m.get("operating_profit"),
+            unit=m.get("unit", "千円"),
+            trend_type=m.get("trend_type", "monthly"),
+        )
+        for m in fa.get("monthly_quarterly_trends", [])
+    ]
+
+    bs_trends = [
+        BSTrend(
+            period=b.get("period", ""),
+            total_assets=b.get("total_assets"),
+            total_liabilities=b.get("total_liabilities"),
+            net_assets=b.get("net_assets"),
+            cash_and_deposits=b.get("cash_and_deposits"),
+            interest_bearing_debt=b.get("interest_bearing_debt"),
+            unit=b.get("unit", "千円"),
+        )
+        for b in fa.get("bs_trends", [])
+    ]
+
+    key_metrics = [
+        KeyMetric(
+            metric_name=km.get("metric_name", ""),
+            values=km.get("values", []),
+        )
+        for km in fa.get("key_metrics", [])
+    ]
+
+    return FinancialAnalysis(
+        pl_trends=pl_trends,
+        monthly_quarterly_trends=mq_trends,
+        bs_trends=bs_trends,
+        key_metrics=key_metrics,
+        financial_comments=fa.get("financial_comments", ""),
+    )
 
 
 def _parse_result(data: dict, input_tokens: int, output_tokens: int) -> AnalysisResult:
@@ -199,11 +360,14 @@ def _parse_result(data: dict, input_tokens: int, output_tokens: int) -> Analysis
         for ki in data.get("key_issues", [])
     ]
 
+    financial_analysis = _parse_financial_analysis(data)
+
     return AnalysisResult(
         company_name=data.get("company_name", "（不明）"),
         summary=data.get("summary", ""),
         questions=questions,
         key_issues=key_issues,
+        financial_analysis=financial_analysis,
         raw_json=data,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
@@ -225,7 +389,7 @@ def _call_anthropic(
 
     response = client.messages.create(
         model=model,
-        max_tokens=8192,
+        max_tokens=16384,
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": user_prompt}],
     )
@@ -268,7 +432,7 @@ def _call_openai(
         try:
             response = client.chat.completions.create(
                 model=model,
-                max_tokens=8192,
+                max_tokens=16384,
                 messages=[
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": user_prompt},
