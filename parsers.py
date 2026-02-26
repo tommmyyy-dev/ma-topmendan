@@ -631,13 +631,14 @@ def extract_financial_summary(files: list[tuple[str, bytes]]) -> str:
     pl_idx = 0
     bs_idx = 0
 
-    # 重複ファイルを除外（同じファイル名のものは最初のみ使用）
-    seen_names: set[str] = set()
+    # 重複ファイルを除外（同じ内容のファイルのみ除外。名前が似ていても内容が違えば残す）
+    import hashlib
+    seen_hashes: set[str] = set()
     unique_files: list[tuple[str, bytes]] = []
     for fname, data in files:
-        base = fname.replace(" (1)", "").replace(" (2)", "").strip()
-        if base not in seen_names:
-            seen_names.add(base)
+        h = hashlib.md5(data).hexdigest()
+        if h not in seen_hashes:
+            seen_hashes.add(h)
             unique_files.append((fname, data))
 
     for fname, data in unique_files:
