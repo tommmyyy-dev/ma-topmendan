@@ -1,0 +1,16 @@
+[project]
+name = "ma-topmendan"
+version = "1.0.0"
+description = "M&A トップ面談 質問リスト自動生成ツール"
+requires-python = ">=3.10"
+dependencies = [
+    "streamlit>=1.40.0",
+    "anthropic>=0.40.0",
+    "pdfplumber>=0.11.0",
+    "openpyxl>=3.1.0",
+    "python-docx>=1.1.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.scripts]
+ma-topmendan = "app:main"
