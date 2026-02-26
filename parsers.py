@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 import json as json_lib
 from dataclasses import dataclass, field
@@ -440,7 +441,7 @@ def _decode_bytes(data: bytes) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 財務CSV自動抽出
+# 財務CSV自動抽出（LLMを経由せず直接構造化データとして抽出）
 # ---------------------------------------------------------------------------
 def _parse_num(s: str) -> int | None:
     """数値文字列をintに変換"""
@@ -457,17 +458,13 @@ def _parse_num(s: str) -> int | None:
 
 
 def _readable_yen(val: int) -> str:
-    """金額を読みやすい日本語表記で返す（例: 123,456,789（約1.2億円））"""
+    """金額を読みやすい日本語表記で返す"""
     abs_val = abs(val)
     if abs_val >= 100_000_000:
-        readable = f"約{val / 100_000_000:.1f}億円"
-    elif abs_val >= 10_000_000:
-        readable = f"約{val / 10_000:.0f}万円"
+        return f"約{val / 100_000_000:.1f}億円"
     elif abs_val >= 10_000:
-        readable = f"約{val / 10_000:.0f}万円"
-    else:
-        return f"{val:,}円"
-    return f"{val:,}円（{readable}）"
+        return f"約{val / 10_000:.0f}万円"
+    return f"{val:,}円"
 
 
 def _find_row(
@@ -490,35 +487,122 @@ def _find_row(
 
 
 _PL_ITEMS: list[tuple[str, list[str]]] = [
-    ("売上高", ["売上高合計", "売上高計"]),
-    ("売上原価", ["売上原価合計", "売上原価計"]),
-    ("売上総利益", ["売上総利益", "売上総利益合計"]),
-    ("販管費", ["販売費及び一般管理費合計", "販売費及一般管理費合計", "販管費合計"]),
-    ("営業利益", ["営業利益", "営業利益合計"]),
-    ("経常利益", ["経常利益", "経常利益合計"]),
-    ("税引前利益", ["税引前当期純利益", "税引前当期純利益合計"]),
-    ("当期純利益", ["当期純利益", "当期純利益合計"]),
+    ("revenue", ["売上高合計", "売上高計"]),
+    ("cost_of_sales", ["売上原価合計", "売上原価計"]),
+    ("gross_profit", ["売上総利益", "売上総利益合計"]),
+    ("sga", ["販売費及び一般管理費合計", "販売費及一般管理費合計", "販管費合計"]),
+    ("operating_profit", ["営業利益", "営業利益合計"]),
+    ("ordinary_profit", ["経常利益", "経常利益合計"]),
+    ("pretax_income", ["税引前当期純利益", "税引前当期純利益合計"]),
+    ("net_income", ["当期純利益", "当期純利益合計"]),
 ]
 
 _BS_ITEMS: list[tuple[str, list[str], tuple[int, ...]]] = [
-    ("総資産", ["資産の部合計"], (0,)),
-    ("流動資産", ["流動資産合計"], (0,)),
-    ("現預金", ["現金及び預金合計", "現金及び預金", "現金及預金合計"], (0, 1)),
-    ("固定資産", ["固定資産合計"], (0,)),
-    ("負債合計", ["負債の部合計"], (0,)),
-    ("流動負債", ["流動負債合計"], (0,)),
-    ("固定負債", ["固定負債合計"], (0,)),
-    ("有利子負債", ["長期借入金合計", "長期借入金"], (0, 1)),
-    ("純資産", ["純資産の部合計"], (0,)),
+    ("total_assets", ["資産の部合計"], (0,)),
+    ("current_assets", ["流動資産合計"], (0,)),
+    ("cash", ["現金及び預金合計", "現金及び預金", "現金及預金合計"], (0, 1)),
+    ("fixed_assets", ["固定資産合計"], (0,)),
+    ("total_liabilities", ["負債の部合計"], (0,)),
+    ("current_liabilities", ["流動負債合計"], (0,)),
+    ("fixed_liabilities", ["固定負債合計"], (0,)),
+    ("interest_bearing_debt", ["長期借入金合計", "長期借入金"], (0, 1)),
+    ("net_assets", ["純資産の部合計"], (0,)),
 ]
 
+# P/L項目の表示名マッピング
+PL_DISPLAY_NAMES = {
+    "revenue": "売上高",
+    "cost_of_sales": "売上原価",
+    "gross_profit": "売上総利益",
+    "sga": "販管費",
+    "operating_profit": "営業利益",
+    "ordinary_profit": "経常利益",
+    "pretax_income": "税引前利益",
+    "net_income": "当期純利益",
+}
 
-def _format_pl(fname: str, text: str, period_idx: int = 0) -> str:
-    """損益計算書CSVから主要PLデータを抽出してフォーマット"""
+BS_DISPLAY_NAMES = {
+    "total_assets": "総資産",
+    "current_assets": "流動資産",
+    "cash": "現預金",
+    "fixed_assets": "固定資産",
+    "total_liabilities": "負債合計",
+    "current_liabilities": "流動負債",
+    "fixed_liabilities": "固定負債",
+    "interest_bearing_debt": "有利子負債",
+    "net_assets": "純資産",
+}
+
+
+@dataclass
+class ExtractedPL:
+    """CSVから直接抽出したP/Lデータ"""
+    filename: str
+    fiscal_month: str  # e.g., "8"
+    period_label: str = ""  # LLMが特定した年度ラベル or 自動生成
+    revenue: int | None = None
+    cost_of_sales: int | None = None
+    gross_profit: int | None = None
+    sga: int | None = None
+    operating_profit: int | None = None
+    ordinary_profit: int | None = None
+    pretax_income: int | None = None
+    net_income: int | None = None
+
+
+@dataclass
+class ExtractedBS:
+    """CSVから直接抽出したB/Sデータ"""
+    filename: str
+    fiscal_month: str
+    period_label: str = ""
+    total_assets: int | None = None
+    current_assets: int | None = None
+    cash: int | None = None
+    fixed_assets: int | None = None
+    total_liabilities: int | None = None
+    current_liabilities: int | None = None
+    fixed_liabilities: int | None = None
+    interest_bearing_debt: int | None = None
+    net_assets: int | None = None
+
+
+@dataclass
+class ExtractedFinancials:
+    """CSVから直接抽出した全財務データ"""
+    pl_list: list[ExtractedPL] = field(default_factory=list)
+    bs_list: list[ExtractedBS] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        """JSON保存用に辞書化"""
+        return {
+            "pl_list": [
+                {k: v for k, v in pl.__dict__.items()}
+                for pl in self.pl_list
+            ],
+            "bs_list": [
+                {k: v for k, v in bs.__dict__.items()}
+                for bs in self.bs_list
+            ],
+        }
+
+    @staticmethod
+    def from_dict(d: dict) -> "ExtractedFinancials":
+        """辞書から復元"""
+        if not d:
+            return ExtractedFinancials()
+        return ExtractedFinancials(
+            pl_list=[ExtractedPL(**p) for p in d.get("pl_list", [])],
+            bs_list=[ExtractedBS(**b) for b in d.get("bs_list", [])],
+        )
+
+
+def _extract_pl_from_csv(fname: str, text: str) -> ExtractedPL | None:
+    """損益計算書CSVから構造化P/Lデータを抽出"""
     reader = csv.reader(io.StringIO(text))
     rows = list(reader)
     if len(rows) < 3:
-        return ""
+        return None
 
     header = rows[0]
     month_cols: list[tuple[int, str]] = []
@@ -530,54 +614,34 @@ def _format_pl(fname: str, text: str, period_idx: int = 0) -> str:
         elif h and h != "決算整理":
             month_cols.append((i, h))
 
-    # 年間売上高を先に取得して期間識別用に使う
-    revenue_row = _find_row(rows, ["売上高合計", "売上高計"], cols=(0,))
-    annual_revenue = None
-    if revenue_row and total_col is not None and total_col < len(revenue_row):
-        annual_revenue = _parse_num(revenue_row[total_col])
+    if total_col is None:
+        return None
 
-    # 決算月を推定（最後の月列が決算月）
+    # 決算月を検出
     fiscal_month = ""
     if month_cols:
-        last_month = month_cols[-1][1].replace("月", "").strip()
-        fiscal_month = f"{last_month}月期"
+        fiscal_month = month_cols[-1][1].replace("月", "").strip()
 
-    revenue_hint = ""
-    if annual_revenue is not None:
-        revenue_hint = f" 年間売上高={annual_revenue:,}円（{_readable_yen(annual_revenue).split('（')[1] if '（' in _readable_yen(annual_revenue) else ''}）" if '（' in _readable_yen(annual_revenue) else f" 年間売上高={annual_revenue:,}円"
-
-    lines = [
-        f"■ 損益計算書（年間合計）- CSV#{period_idx + 1} [{fiscal_month}決算]{revenue_hint}",
-        f"  ファイル: {fname}",
-        "  単位: 円",
-        "",
-        "【年間合計】",
-    ]
+    pl = ExtractedPL(filename=fname, fiscal_month=fiscal_month)
 
     found_any = False
-    for display, patterns in _PL_ITEMS:
+    for key, patterns in _PL_ITEMS:
         row = _find_row(rows, patterns, cols=(0,))
-        if not row:
-            continue
-        found_any = True
-        val = None
-        if total_col is not None and total_col < len(row):
+        if row and total_col < len(row):
             val = _parse_num(row[total_col])
-        if val is not None:
-            lines.append(f"  {display}: {val:,}円")
+            if val is not None:
+                setattr(pl, key, val)
+                found_any = True
 
-    if not found_any:
-        return ""
-
-    return "\n".join(lines)
+    return pl if found_any else None
 
 
-def _format_bs(fname: str, text: str, period_idx: int = 0) -> str:
-    """貸借対照表CSVから主要BSデータを抽出してフォーマット"""
+def _extract_bs_from_csv(fname: str, text: str) -> ExtractedBS | None:
+    """貸借対照表CSVから構造化B/Sデータを抽出"""
     reader = csv.reader(io.StringIO(text))
     rows = list(reader)
     if len(rows) < 3:
-        return ""
+        return None
 
     header = rows[0]
     month_cols: list[tuple[int, str]] = []
@@ -587,59 +651,48 @@ def _format_bs(fname: str, text: str, period_idx: int = 0) -> str:
             month_cols.append((i, h))
 
     if not month_cols:
-        return ""
+        return None
 
-    # 総資産を先に取得して期間識別用に使う
-    asset_row = _find_row(rows, ["資産の部合計"], cols=(0,))
-    latest_col, latest_label = month_cols[-1]
-    total_assets = None
-    if asset_row and latest_col < len(asset_row):
-        total_assets = _parse_num(asset_row[latest_col])
+    # 期末（最終月の列）を使用
+    latest_col = month_cols[-1][0]
+    fiscal_month = month_cols[-1][1].replace("月", "").strip()
 
-    assets_hint = ""
-    if total_assets is not None:
-        assets_hint = f" 直近総資産={total_assets:,}円"
-
-    lines = [
-        f"■ 貸借対照表（期末残高）- CSV#{period_idx + 1}{assets_hint}",
-        f"  ファイル: {fname}",
-        "  単位: 円",
-        f"  基準日: {latest_label}",
-        "",
-        "【期末残高】",
-    ]
+    bs = ExtractedBS(filename=fname, fiscal_month=fiscal_month)
 
     found_any = False
-    for display, patterns, cols in _BS_ITEMS:
+    for key, patterns, cols in _BS_ITEMS:
         row = _find_row(rows, patterns, cols=cols)
         if row and latest_col < len(row):
             val = _parse_num(row[latest_col])
             if val is not None:
-                lines.append(f"  {display}: {val:,}円")
+                setattr(bs, key, val)
                 found_any = True
 
-    if not found_any:
-        return ""
-
-    return "\n".join(lines)
+    return bs if found_any else None
 
 
-def extract_financial_summary(files: list[tuple[str, bytes]]) -> str:
-    """財務CSVから主要データを自動抽出し、LLM用の構造化テキストで返す"""
-    pl_parts: list[str] = []
-    bs_parts: list[str] = []
-    pl_idx = 0
-    bs_idx = 0
-
-    # 重複ファイルを除外（同じ内容のファイルのみ除外。名前が似ていても内容が違えば残す）
-    import hashlib
-    seen_hashes: set[str] = set()
-    unique_files: list[tuple[str, bytes]] = []
+def _dedup_files(files: list[tuple[str, bytes]]) -> list[tuple[str, bytes]]:
+    """同一内容のファイルを除外（ファイル名ではなく内容のMD5ハッシュで判定）"""
+    seen: set[str] = set()
+    result: list[tuple[str, bytes]] = []
     for fname, data in files:
         h = hashlib.md5(data).hexdigest()
-        if h not in seen_hashes:
-            seen_hashes.add(h)
-            unique_files.append((fname, data))
+        if h not in seen:
+            seen.add(h)
+            result.append((fname, data))
+    return result
+
+
+def extract_financial_data(files: list[tuple[str, bytes]]) -> ExtractedFinancials:
+    """CSVから財務データを直接構造化データとして抽出する（LLM不要）
+
+    P/Lは売上高昇順（=時系列順と推定）でソートして返す。
+    B/Sは総資産昇順でソートして返す。
+    """
+    unique_files = _dedup_files(files)
+
+    pl_list: list[ExtractedPL] = []
+    bs_list: list[ExtractedBS] = []
 
     for fname, data in unique_files:
         if not fname.lower().endswith(".csv"):
@@ -648,34 +701,141 @@ def extract_financial_summary(files: list[tuple[str, bytes]]) -> str:
             text = _decode_bytes(data)
         except Exception:
             continue
-        if "損益" in fname:
-            s = _format_pl(fname, text, period_idx=pl_idx)
-            if s:
-                pl_parts.append(s)
-                pl_idx += 1
-        elif "貸借" in fname:
-            s = _format_bs(fname, text, period_idx=bs_idx)
-            if s:
-                bs_parts.append(s)
-                bs_idx += 1
 
-    parts = pl_parts + bs_parts
+        if "損益" in fname:
+            pl = _extract_pl_from_csv(fname, text)
+            if pl:
+                pl_list.append(pl)
+        elif "貸借" in fname:
+            bs = _extract_bs_from_csv(fname, text)
+            if bs:
+                bs_list.append(bs)
+
+    # 売上高昇順でソート（= 時系列順と推定）
+    pl_list.sort(key=lambda p: p.revenue or 0)
+    # 総資産昇順でソート
+    bs_list.sort(key=lambda b: b.total_assets or 0)
+
+    # デフォルトの期間ラベルを生成（売上高ベース）
+    for i, pl in enumerate(pl_list):
+        rev_str = _readable_yen(pl.revenue) if pl.revenue else "不明"
+        month_str = f"{pl.fiscal_month}月期" if pl.fiscal_month else ""
+        pl.period_label = f"第{i+1}期 ({month_str} 売上{rev_str})"
+
+    for i, bs in enumerate(bs_list):
+        asset_str = _readable_yen(bs.total_assets) if bs.total_assets else "不明"
+        month_str = f"{bs.fiscal_month}月期" if bs.fiscal_month else ""
+        bs.period_label = f"第{i+1}期 ({month_str} 総資産{asset_str})"
+
+    return ExtractedFinancials(pl_list=pl_list, bs_list=bs_list)
+
+
+def apply_period_labels_from_llm(
+    financials: ExtractedFinancials,
+    llm_pl_trends: list[dict],
+    llm_bs_trends: list[dict],
+) -> None:
+    """LLMが特定した年度ラベルをCSV抽出データにマッチングして適用する。
+
+    マッチングは売上高/総資産の近似値で行う（±10%以内でマッチ）。
+    マッチしない場合はデフォルトラベルを維持。
+    """
+    import re
+
+    def _is_valid_period(label: str) -> bool:
+        """「XXXX年X月期」形式かチェック"""
+        return bool(re.match(r"^\d{4}年\d{1,2}月期$", label.strip()))
+
+    # P/Lマッチング
+    for llm_pl in llm_pl_trends:
+        period = llm_pl.get("period", "")
+        llm_rev = llm_pl.get("revenue")
+        if not _is_valid_period(period) or llm_rev is None:
+            continue
+        for pl in financials.pl_list:
+            if pl.revenue is None:
+                continue
+            # ±10%以内でマッチ
+            if abs(pl.revenue - llm_rev) / max(pl.revenue, 1) < 0.10:
+                pl.period_label = period
+                break
+
+    # B/Sマッチング
+    for llm_bs in llm_bs_trends:
+        period = llm_bs.get("period", "")
+        llm_assets = llm_bs.get("total_assets")
+        if not _is_valid_period(period) or llm_assets is None:
+            continue
+        for bs in financials.bs_list:
+            if bs.total_assets is None:
+                continue
+            if abs(bs.total_assets - llm_assets) / max(bs.total_assets, 1) < 0.10:
+                bs.period_label = period
+                break
+
+
+def extract_financial_summary(files: list[tuple[str, bytes]]) -> str:
+    """財務CSVから主要データを自動抽出し、LLM用のテキストで返す。
+
+    LLMには年度ラベル特定の参考情報として渡す。
+    実際の数値表示にはextract_financial_data()の結果を使う。
+    """
+    unique_files = _dedup_files(files)
+
+    pl_parts: list[str] = []
+    bs_parts: list[str] = []
+
+    for fname, data in unique_files:
+        if not fname.lower().endswith(".csv"):
+            continue
+        try:
+            text = _decode_bytes(data)
+        except Exception:
+            continue
+
+        if "損益" in fname:
+            pl = _extract_pl_from_csv(fname, text)
+            if pl:
+                rev_str = f"{pl.revenue:,}円（{_readable_yen(pl.revenue)}）" if pl.revenue else "不明"
+                month_str = f"{pl.fiscal_month}月期" if pl.fiscal_month else ""
+                lines = [
+                    f"■ 損益計算書 [{month_str}決算] 売上高={rev_str}",
+                    f"  ファイル: {fname}",
+                    "  単位: 円",
+                ]
+                for key, _ in _PL_ITEMS:
+                    val = getattr(pl, key, None)
+                    if val is not None:
+                        lines.append(f"  {PL_DISPLAY_NAMES[key]}: {val:,}円")
+                pl_parts.append("\n".join(lines))
+
+        elif "貸借" in fname:
+            bs = _extract_bs_from_csv(fname, text)
+            if bs:
+                asset_str = f"{bs.total_assets:,}円" if bs.total_assets else "不明"
+                month_str = f"{bs.fiscal_month}月期" if bs.fiscal_month else ""
+                lines = [
+                    f"■ 貸借対照表 [{month_str}] 総資産={asset_str}",
+                    f"  ファイル: {fname}",
+                    "  単位: 円",
+                ]
+                for key, _, _ in _BS_ITEMS:
+                    val = getattr(bs, key, None)
+                    if val is not None:
+                        lines.append(f"  {BS_DISPLAY_NAMES[key]}: {val:,}円")
+                bs_parts.append("\n".join(lines))
+
+    # 売上高でソートして表示
+    parts = sorted(pl_parts) + sorted(bs_parts)
     if not parts:
         return ""
 
-    period_note = (
-        "\n※ 各CSVは異なる会計年度の1年分データです。\n"
-        "  IMや他の資料の売上高・総資産の数値と照合して、各CSVが何年度のものか特定してください。\n"
-        "  例: 売上高171,657,514円のCSV → IMで同程度の売上がある年度を探す → 2023年8月期 と特定\n"
-        "  pl_trendsやbs_trendsのperiodには必ず「XXXX年X月期」形式で出力してください。\n"
-        "  「期間A」「CSV#1」等の仮ラベルは絶対に使わないでください。\n"
-    )
-
     return (
         "【財務データ（CSVから自動抽出・正確な数値）】\n"
-        "以下は財務CSVからプログラムで正確に抽出した数値です。\n"
-        "financial_analysisセクションの数値には、必ずこのデータをそのまま使用してください。\n"
-        "IMの記載と異なる場合でもCSVデータを優先してください。\n"
-        f"{period_note}\n"
+        f"P/L: {len(pl_parts)}期分、B/S: {len(bs_parts)}期分のデータを抽出済み。\n"
+        "以下は各CSVの年間合計値です。\n"
+        "IMの記載と照合して、各CSVが何年度のものか特定してください。\n"
+        "pl_trends/bs_trendsのperiodには必ず「XXXX年X月期」形式で出力してください。\n"
+        "「期間A」「CSV#1」等の仮ラベルは禁止です。\n\n"
         + "\n\n".join(parts)
     )

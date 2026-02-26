@@ -17,7 +17,17 @@ from analyzer import (
     analyze_documents,
 )
 from excel_export import export_to_excel
-from parsers import SUPPORTED_EXTENSIONS, ParsedDocument, extract_financial_summary, parse_file
+from parsers import (
+    SUPPORTED_EXTENSIONS,
+    ExtractedFinancials,
+    ParsedDocument,
+    apply_period_labels_from_llm,
+    extract_financial_data,
+    extract_financial_summary,
+    parse_file,
+    PL_DISPLAY_NAMES,
+    BS_DISPLAY_NAMES,
+)
 
 load_dotenv()
 
@@ -196,8 +206,11 @@ def _financial_to_dict(fa: FinancialAnalysis) -> dict:
     }
 
 
-def _result_to_dict(r: AnalysisResult) -> dict:
-    return {
+def _result_to_dict(
+    r: AnalysisResult,
+    extracted_financials: ExtractedFinancials | None = None,
+) -> dict:
+    d = {
         "company_name": r.company_name,
         "company_url": r.company_url,
         "summary": r.summary,
@@ -230,6 +243,9 @@ def _result_to_dict(r: AnalysisResult) -> dict:
         "output_tokens": r.output_tokens,
         "created_at": datetime.now().isoformat(),
     }
+    if extracted_financials:
+        d["extracted_financials"] = extracted_financials.to_dict()
+    return d
 
 
 def _dict_to_financial(d: dict) -> FinancialAnalysis:
@@ -325,6 +341,8 @@ if "current_thread" not in st.session_state:
     st.session_state.current_thread = None  # thread_id or None (= 新規)
 if "result" not in st.session_state:
     st.session_state.result = None
+if "extracted_financials" not in st.session_state:
+    st.session_state.extracted_financials = None
 
 # ---------------------------------------------------------------------------
 # サイドバー
@@ -334,6 +352,7 @@ with st.sidebar:
     if st.button("＋ 新しい案件の分析を作成", use_container_width=True, type="primary"):
         st.session_state.current_thread = None
         st.session_state.result = None
+        st.session_state.extracted_financials = None
         st.rerun()
 
     st.markdown("---")
@@ -362,6 +381,10 @@ with st.sidebar:
             ):
                 st.session_state.current_thread = tid
                 st.session_state.result = _dict_to_result(t)
+                ef_data = t.get("extracted_financials")
+                st.session_state.extracted_financials = (
+                    ExtractedFinancials.from_dict(ef_data) if ef_data else None
+                )
                 st.rerun()
 
             if is_active:
@@ -371,6 +394,7 @@ with st.sidebar:
                     _save_threads(st.session_state.threads)
                     st.session_state.current_thread = None
                     st.session_state.result = None
+                    st.session_state.extracted_financials = None
                     st.rerun()
     else:
         st.caption("まだ案件がありません")
@@ -466,9 +490,10 @@ if st.session_state.current_thread is None and result is None:
                     st.stop()
 
                 # 財務CSVから正確なデータを事前抽出
+                fin_data = extract_financial_data(raw_files)
                 fin_summary = extract_financial_summary(raw_files)
-                if fin_summary:
-                    st.write("📊 財務CSVから数値データを自動抽出しました")
+                if fin_data.pl_list or fin_data.bs_list:
+                    st.write(f"📊 財務CSVから P/L {len(fin_data.pl_list)}期分、B/S {len(fin_data.bs_list)}期分を直接抽出しました")
 
                 st.write(f"✅ {len(valid_docs)}/{len(parsed_docs)} 件の資料を正常に解析")
                 status.update(label="資料解析完了", state="complete")
@@ -491,14 +516,24 @@ if st.session_state.current_thread is None and result is None:
                     st.stop()
                 status.update(label="分析完了！", state="complete")
 
+            # LLMの年度ラベルをCSV抽出データに適用
+            if fin_data.pl_list or fin_data.bs_list:
+                llm_fa = new_result.raw_json.get("financial_analysis", {})
+                apply_period_labels_from_llm(
+                    fin_data,
+                    llm_fa.get("pl_trends", []),
+                    llm_fa.get("bs_trends", []),
+                )
+
             # スレッドとして保存
             thread_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-            thread_data = _result_to_dict(new_result)
+            thread_data = _result_to_dict(new_result, fin_data)
             st.session_state.threads[thread_id] = thread_data
             _save_threads(st.session_state.threads)
 
             st.session_state.current_thread = thread_id
             st.session_state.result = new_result
+            st.session_state.extracted_financials = fin_data
             st.rerun()
 
     else:
@@ -538,7 +573,7 @@ elif result:
     )
 
     # Excelダウンロード
-    excel_bytes = export_to_excel(result)
+    excel_bytes = export_to_excel(result, st.session_state.get("extracted_financials"))
     fname = f"{result.company_name}_トップ面談質問_{datetime.now().strftime('%Y%m%d')}.xlsx"
     st.download_button(
         label="📥 Excelダウンロード",
@@ -612,65 +647,64 @@ elif result:
             return df_display
 
         fa = result.financial_analysis
-        has_financial = (
-            fa.pl_trends or fa.bs_trends or fa.key_metrics
-        )
+        ef: ExtractedFinancials | None = st.session_state.get("extracted_financials")
 
-        if not has_financial:
+        has_csv_data = ef and (ef.pl_list or ef.bs_list)
+        has_llm_financial = fa.key_metrics or fa.financial_comments
+
+        if not has_csv_data and not has_llm_financial:
             st.info("財務データが資料から抽出できませんでした。財務諸表・試算表を含む資料をアップロードすると、ここに財務分析が表示されます。")
         else:
-            # --- 財務コメント ---
+            # --- 財務コメント (LLM) ---
             if fa.financial_comments:
                 st.markdown("### 財務分析サマリー")
                 st.info(fa.financial_comments)
 
-            # --- 業績推移 (P/L) ---
-            if fa.pl_trends:
+            # --- 業績推移 (P/L) - CSV直接データ ---
+            if has_csv_data and ef.pl_list:
                 st.markdown("### 業績推移（P/L）")
-                unit = fa.pl_trends[0].unit if fa.pl_trends else "千円"
+                st.caption(f"CSVから直接抽出（{len(ef.pl_list)}期分）・単位: 円")
                 pl_data = []
-                for p in fa.pl_trends:
-                    pl_data.append({
-                        "期間": p.period,
-                        f"売上高（{unit}）": p.revenue,
-                        f"営業利益（{unit}）": p.operating_profit,
-                        f"経常利益（{unit}）": p.ordinary_profit,
-                        f"当期純利益（{unit}）": p.net_income,
-                        f"EBITDA（{unit}）": p.ebitda,
-                    })
+                for pl in ef.pl_list:
+                    row: dict = {"期間": pl.period_label}
+                    row["売上高"] = pl.revenue
+                    row["売上原価"] = pl.cost_of_sales
+                    row["売上総利益"] = pl.gross_profit
+                    row["販管費"] = pl.sga
+                    row["営業利益"] = pl.operating_profit
+                    row["経常利益"] = pl.ordinary_profit
+                    row["当期純利益"] = pl.net_income
+                    pl_data.append(row)
                 df_pl = pd.DataFrame(pl_data)
                 st.dataframe(_fmt_number_cols(df_pl), use_container_width=True, hide_index=True)
 
                 # 売上高グラフ
-                revenue_col = f"売上高（{unit}）"
-                if revenue_col in df_pl.columns and df_pl[revenue_col].notna().any():
+                if df_pl["売上高"].notna().any():
                     st.markdown("**売上高推移**")
-                    df_rev = df_pl[["期間", revenue_col]].copy()
-                    df_rev[revenue_col] = pd.to_numeric(df_rev[revenue_col], errors="coerce")
+                    df_rev = df_pl[["期間", "売上高"]].copy()
+                    df_rev["売上高"] = pd.to_numeric(df_rev["売上高"], errors="coerce")
                     st.bar_chart(df_rev.set_index("期間"))
 
                 # 営業利益グラフ
-                op_col = f"営業利益（{unit}）"
-                if op_col in df_pl.columns and df_pl[op_col].notna().any():
+                if df_pl["営業利益"].notna().any():
                     st.markdown("**営業利益推移**")
-                    df_op = df_pl[["期間", op_col]].copy()
-                    df_op[op_col] = pd.to_numeric(df_op[op_col], errors="coerce")
+                    df_op = df_pl[["期間", "営業利益"]].copy()
+                    df_op["営業利益"] = pd.to_numeric(df_op["営業利益"], errors="coerce")
                     st.bar_chart(df_op.set_index("期間"))
 
-            # --- BS推移 ---
-            if fa.bs_trends:
+            # --- BS推移 - CSV直接データ ---
+            if has_csv_data and ef.bs_list:
                 st.markdown("### BS推移（貸借対照表）")
-                unit = fa.bs_trends[0].unit
+                st.caption(f"CSVから直接抽出（{len(ef.bs_list)}期分）・単位: 円")
                 bs_data = []
-                for b in fa.bs_trends:
-                    bs_data.append({
-                        "期間": b.period,
-                        f"総資産（{unit}）": b.total_assets,
-                        f"負債合計（{unit}）": b.total_liabilities,
-                        f"純資産（{unit}）": b.net_assets,
-                        f"現預金（{unit}）": b.cash_and_deposits,
-                        f"有利子負債（{unit}）": b.interest_bearing_debt,
-                    })
+                for bs in ef.bs_list:
+                    row: dict = {"期間": bs.period_label}
+                    row["総資産"] = bs.total_assets
+                    row["負債合計"] = bs.total_liabilities
+                    row["純資産"] = bs.net_assets
+                    row["現預金"] = bs.cash
+                    row["有利子負債"] = bs.interest_bearing_debt
+                    bs_data.append(row)
                 df_bs = pd.DataFrame(bs_data)
                 st.dataframe(_fmt_number_cols(df_bs), use_container_width=True, hide_index=True)
 
@@ -679,7 +713,7 @@ elif result:
                     df_chart = df_bs.set_index("期間")[chart_cols].apply(pd.to_numeric, errors="coerce")
                     st.bar_chart(df_chart)
 
-            # --- 主要財務指標 ---
+            # --- 主要財務指標 (LLM) ---
             if fa.key_metrics:
                 st.markdown("### 主要財務指標")
                 for km in fa.key_metrics:
