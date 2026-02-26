@@ -456,6 +456,20 @@ def _parse_num(s: str) -> int | None:
             return None
 
 
+def _readable_yen(val: int) -> str:
+    """金額を読みやすい日本語表記で返す（例: 123,456,789（約1.2億円））"""
+    abs_val = abs(val)
+    if abs_val >= 100_000_000:
+        readable = f"約{val / 100_000_000:.1f}億円"
+    elif abs_val >= 10_000_000:
+        readable = f"約{val / 10_000:.0f}万円"
+    elif abs_val >= 10_000:
+        readable = f"約{val / 10_000:.0f}万円"
+    else:
+        return f"{val:,}円"
+    return f"{val:,}円（{readable}）"
+
+
 def _find_row(
     rows: list[list[str]], patterns: list[str], cols: tuple[int, ...] = (0,)
 ) -> list[str] | None:
@@ -518,7 +532,7 @@ def _format_pl(fname: str, text: str) -> str:
 
     lines = [f"■ 損益計算書（月次推移）- {fname}", "単位: 円", ""]
 
-    # 年間合計
+    # 年間合計（読みやすい単位付き）
     lines.append("【年間合計】")
     found_any = False
     for display, patterns in _PL_ITEMS:
@@ -530,25 +544,26 @@ def _format_pl(fname: str, text: str) -> str:
         if total_col is not None and total_col < len(row):
             val = _parse_num(row[total_col])
         if val is not None:
-            lines.append(f"  {display}: {val:,}")
+            lines.append(f"  {display}: {_readable_yen(val)}")
 
     if not found_any:
         return ""
 
-    # 月次推移（売上高・営業利益のみ）
-    for item_display in ["売上高", "営業利益"]:
-        item_patterns = dict(_PL_ITEMS).get(item_display)
-        if not item_patterns:
-            continue
+    # 月次推移（全PL項目）
+    lines.append("")
+    lines.append("【月次推移】")
+    # ヘッダー行
+    month_labels = [mlabel for _, mlabel in month_cols]
+    lines.append("科目 | " + " | ".join(month_labels))
+    for item_display, item_patterns in _PL_ITEMS:
         row = _find_row(rows, item_patterns, cols=(0,))
         if not row:
             continue
-        parts = []
-        for ci, mlabel in month_cols:
+        vals = []
+        for ci, _ in month_cols:
             v = _parse_num(row[ci]) if ci < len(row) else None
-            parts.append(f"{mlabel}={v:,}" if v is not None else f"{mlabel}=-")
-        lines.append("")
-        lines.append(f"月次{item_display}: {' / '.join(parts)}")
+            vals.append(f"{v:,}" if v is not None else "-")
+        lines.append(f"{item_display} | " + " | ".join(vals))
 
     return "\n".join(lines)
 
@@ -580,7 +595,7 @@ def _format_bs(fname: str, text: str) -> str:
         if row and latest_col < len(row):
             val = _parse_num(row[latest_col])
             if val is not None:
-                lines.append(f"  {display}: {val:,}")
+                lines.append(f"  {display}: {_readable_yen(val)}")
                 found_any = True
 
     if not found_any:
