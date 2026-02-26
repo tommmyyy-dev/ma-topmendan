@@ -17,7 +17,7 @@ from analyzer import (
     analyze_documents,
 )
 from excel_export import export_to_excel
-from parsers import SUPPORTED_EXTENSIONS, ParsedDocument, parse_file
+from parsers import SUPPORTED_EXTENSIONS, ParsedDocument, extract_financial_summary, parse_file
 
 load_dotenv()
 
@@ -441,9 +441,12 @@ if st.session_state.current_thread is None and result is None:
             # ファイル解析
             with st.status("資料を解析中...", expanded=True) as status:
                 parsed_docs: list[ParsedDocument] = []
+                raw_files: list[tuple[str, bytes]] = []
                 for f in uploaded_files:
                     st.write(f"📄 {f.name} を解析中...")
-                    doc = parse_file(f.name, f.read())
+                    file_bytes = f.read()
+                    raw_files.append((f.name, file_bytes))
+                    doc = parse_file(f.name, file_bytes)
                     parsed_docs.append(doc)
                     if doc.warnings:
                         for w in doc.warnings:
@@ -453,6 +456,11 @@ if st.session_state.current_thread is None and result is None:
                 if not valid_docs:
                     st.error("テキストを抽出できるファイルがありませんでした。")
                     st.stop()
+
+                # 財務CSVから正確なデータを事前抽出
+                fin_summary = extract_financial_summary(raw_files)
+                if fin_summary:
+                    st.write("📊 財務CSVから数値データを自動抽出しました")
 
                 st.write(f"✅ {len(valid_docs)}/{len(parsed_docs)} 件の資料を正常に解析")
                 status.update(label="資料解析完了", state="complete")
@@ -468,6 +476,7 @@ if st.session_state.current_thread is None and result is None:
                         documents=valid_docs,
                         model=model,
                         provider=provider,
+                        financial_summary=fin_summary,
                     )
                 except Exception as e:
                     st.error(f"API呼び出しエラー: {e}")

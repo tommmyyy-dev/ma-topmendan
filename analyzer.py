@@ -49,6 +49,7 @@ SYSTEM_PROMPT = """\
 def _build_analysis_prompt(
     documents: list[ParsedDocument],
     max_chars_per_doc: int = 30000,
+    financial_summary: str = "",
 ) -> str:
     category_list = "\n".join(
         f"  - {code}: {name}" for code, name in CATEGORIES.items()
@@ -67,10 +68,14 @@ def _build_analysis_prompt(
 
     all_docs_text = "\n\n".join(doc_sections)
 
+    financial_block = ""
+    if financial_summary:
+        financial_block = f"\n{financial_summary}\n"
+
     return f"""\
 以下はM&A案件における対象企業の提供資料です。これらを総合的に分析し、
 トップ面談（経営者面談）用の質問リスト・論点を作成してください。
-
+{financial_block}
 【提供資料】
 {all_docs_text}
 
@@ -90,6 +95,12 @@ def _build_analysis_prompt(
 
 ■ セクション4: 財務分析
 資料から読み取れる財務情報を可能な限り詳細に抽出・整理してください。
+
+【重要】「財務データ（CSVから自動抽出・正確な数値）」セクションがある場合、
+その数値は財務CSVからプログラムで正確に抽出されたものです。
+financial_analysisセクションの数値には、必ずこの自動抽出データをそのまま使用してください。
+IMや他の資料の記載と異なる場合でも、CSV自動抽出データを優先してください。
+
 - 業績推移（P/L）: 売上高・営業利益・経常利益・当期純利益・EBITDAを年度別に
 - 月次または四半期推移: 直近の月次売上高・営業利益の推移（月次が無ければ四半期で）
 - BS推移: 総資産・負債合計・純資産・現預金・有利子負債を年度別に
@@ -97,7 +108,8 @@ def _build_analysis_prompt(
 - 財務分析コメント: トレンドの特徴、異常値、注意すべき点を記載
 
 ※ 資料に該当データが無い項目はnullにしてください。
-※ 金額の単位は資料中の表記に合わせ、unitフィールドに記載してください（例: "千円", "百万円"）。
+※ 金額の単位は資料中の表記に合わせ、unitフィールドに記載してください（例: "円", "千円", "百万円"）。
+※ 月次データがCSVから抽出されている場合、monthly_quarterly_trendsに全月分を含めてください。
 
 【出力フォーマット】
 必ず以下のJSON形式で出力してください。JSON以外のテキストは含めないでください。
@@ -381,11 +393,12 @@ def _call_anthropic(
     api_key: str,
     documents: list[ParsedDocument],
     model: str,
+    financial_summary: str = "",
 ) -> AnalysisResult:
     import anthropic
 
     client = anthropic.Anthropic(api_key=api_key)
-    user_prompt = _build_analysis_prompt(documents)
+    user_prompt = _build_analysis_prompt(documents, financial_summary=financial_summary)
 
     response = client.messages.create(
         model=model,
@@ -418,6 +431,7 @@ def _call_openai(
     api_key: str,
     documents: list[ParsedDocument],
     model: str,
+    financial_summary: str = "",
 ) -> AnalysisResult:
     from openai import OpenAI, RateLimitError
 
@@ -428,7 +442,9 @@ def _call_openai(
     last_error = None
 
     for limit in char_limits:
-        user_prompt = _build_analysis_prompt(documents, max_chars_per_doc=limit)
+        user_prompt = _build_analysis_prompt(
+            documents, max_chars_per_doc=limit, financial_summary=financial_summary
+        )
         try:
             response = client.chat.completions.create(
                 model=model,
@@ -484,12 +500,13 @@ def analyze_documents(
     documents: list[ParsedDocument],
     model: str = "gpt-4o",
     provider: str = "OpenAI (GPT)",
+    financial_summary: str = "",
 ) -> AnalysisResult:
     """ドキュメントを分析してトップ面談用の質問リストを生成する"""
     if provider == "Anthropic (Claude)":
-        result = _call_anthropic(api_key, documents, model)
+        result = _call_anthropic(api_key, documents, model, financial_summary)
     else:
-        result = _call_openai(api_key, documents, model)
+        result = _call_openai(api_key, documents, model, financial_summary)
 
     # 会社URLを検索して付与
     if result.company_name and result.company_name not in ("（不明）", "（解析エラー）"):

@@ -437,3 +437,199 @@ def _decode_bytes(data: bytes) -> str:
         except (UnicodeDecodeError, LookupError):
             continue
     return data.decode("utf-8", errors="replace")
+
+
+# ---------------------------------------------------------------------------
+# 財務CSV自動抽出
+# ---------------------------------------------------------------------------
+def _parse_num(s: str) -> int | None:
+    """数値文字列をintに変換"""
+    s = s.strip().replace(",", "")
+    if not s or s == "-":
+        return None
+    try:
+        return int(s)
+    except ValueError:
+        try:
+            return int(float(s))
+        except ValueError:
+            return None
+
+
+def _find_row(
+    rows: list[list[str]], patterns: list[str], cols: tuple[int, ...] = (0,)
+) -> list[str] | None:
+    """パターンに一致し数値データを含む行を返す"""
+    for row in rows:
+        if not row or len(row) < 4:
+            continue
+        for c in cols:
+            if c >= len(row):
+                continue
+            label = row[c].strip()
+            for p in patterns:
+                if label == p:
+                    for i in range(3, min(len(row), 20)):
+                        if _parse_num(row[i]) is not None:
+                            return row
+    return None
+
+
+_PL_ITEMS: list[tuple[str, list[str]]] = [
+    ("売上高", ["売上高合計", "売上高計"]),
+    ("売上原価", ["売上原価合計", "売上原価計"]),
+    ("売上総利益", ["売上総利益", "売上総利益合計"]),
+    ("販管費", ["販売費及び一般管理費合計", "販売費及一般管理費合計", "販管費合計"]),
+    ("営業利益", ["営業利益", "営業利益合計"]),
+    ("経常利益", ["経常利益", "経常利益合計"]),
+    ("税引前利益", ["税引前当期純利益", "税引前当期純利益合計"]),
+    ("当期純利益", ["当期純利益", "当期純利益合計"]),
+]
+
+_BS_ITEMS: list[tuple[str, list[str], tuple[int, ...]]] = [
+    ("総資産", ["資産の部合計"], (0,)),
+    ("流動資産", ["流動資産合計"], (0,)),
+    ("現預金", ["現金及び預金合計", "現金及び預金", "現金及預金合計"], (0, 1)),
+    ("固定資産", ["固定資産合計"], (0,)),
+    ("負債合計", ["負債の部合計"], (0,)),
+    ("流動負債", ["流動負債合計"], (0,)),
+    ("固定負債", ["固定負債合計"], (0,)),
+    ("有利子負債", ["長期借入金合計", "長期借入金"], (0, 1)),
+    ("純資産", ["純資産の部合計"], (0,)),
+]
+
+
+def _format_pl(fname: str, text: str) -> str:
+    """損益計算書CSVから主要PLデータを抽出してフォーマット"""
+    reader = csv.reader(io.StringIO(text))
+    rows = list(reader)
+    if len(rows) < 3:
+        return ""
+
+    header = rows[0]
+    month_cols: list[tuple[int, str]] = []
+    total_col: int | None = None
+    for i in range(3, len(header)):
+        h = header[i].strip()
+        if h == "合計":
+            total_col = i
+        elif h and h != "決算整理":
+            month_cols.append((i, h))
+
+    lines = [f"■ 損益計算書（月次推移）- {fname}", "単位: 円", ""]
+
+    # 年間合計
+    lines.append("【年間合計】")
+    found_any = False
+    for display, patterns in _PL_ITEMS:
+        row = _find_row(rows, patterns, cols=(0,))
+        if not row:
+            continue
+        found_any = True
+        val = None
+        if total_col is not None and total_col < len(row):
+            val = _parse_num(row[total_col])
+        if val is not None:
+            lines.append(f"  {display}: {val:,}")
+
+    if not found_any:
+        return ""
+
+    # 月次推移（売上高・営業利益のみ）
+    for item_display in ["売上高", "営業利益"]:
+        item_patterns = dict(_PL_ITEMS).get(item_display)
+        if not item_patterns:
+            continue
+        row = _find_row(rows, item_patterns, cols=(0,))
+        if not row:
+            continue
+        parts = []
+        for ci, mlabel in month_cols:
+            v = _parse_num(row[ci]) if ci < len(row) else None
+            parts.append(f"{mlabel}={v:,}" if v is not None else f"{mlabel}=-")
+        lines.append("")
+        lines.append(f"月次{item_display}: {' / '.join(parts)}")
+
+    return "\n".join(lines)
+
+
+def _format_bs(fname: str, text: str) -> str:
+    """貸借対照表CSVから主要BSデータを抽出してフォーマット"""
+    reader = csv.reader(io.StringIO(text))
+    rows = list(reader)
+    if len(rows) < 3:
+        return ""
+
+    header = rows[0]
+    month_cols: list[tuple[int, str]] = []
+    for i in range(3, len(header)):
+        h = header[i].strip()
+        if h:
+            month_cols.append((i, h))
+
+    if not month_cols:
+        return ""
+
+    latest_col, latest_label = month_cols[-1]
+    lines = [f"■ 貸借対照表 - {fname}", "単位: 円", f"基準日: {latest_label}", ""]
+
+    lines.append("【残高】")
+    found_any = False
+    for display, patterns, cols in _BS_ITEMS:
+        row = _find_row(rows, patterns, cols=cols)
+        if row and latest_col < len(row):
+            val = _parse_num(row[latest_col])
+            if val is not None:
+                lines.append(f"  {display}: {val:,}")
+                found_any = True
+
+    if not found_any:
+        return ""
+
+    # 月次推移（総資産・純資産・現預金）
+    for item_display, item_patterns, item_cols in [
+        ("総資産", ["資産の部合計"], (0,)),
+        ("純資産", ["純資産の部合計"], (0,)),
+        ("現預金", ["現金及び預金合計", "現金及び預金", "現金及預金合計"], (0, 1)),
+    ]:
+        row = _find_row(rows, item_patterns, cols=item_cols)
+        if not row:
+            continue
+        parts = []
+        for ci, mlabel in month_cols:
+            v = _parse_num(row[ci]) if ci < len(row) else None
+            parts.append(f"{mlabel}={v:,}" if v is not None else f"{mlabel}=-")
+        lines.append("")
+        lines.append(f"月次{item_display}: {' / '.join(parts)}")
+
+    return "\n".join(lines)
+
+
+def extract_financial_summary(files: list[tuple[str, bytes]]) -> str:
+    """財務CSVから主要データを自動抽出し、LLM用の構造化テキストで返す"""
+    parts: list[str] = []
+    for fname, data in files:
+        if not fname.lower().endswith(".csv"):
+            continue
+        try:
+            text = _decode_bytes(data)
+        except Exception:
+            continue
+        if "損益" in fname:
+            s = _format_pl(fname, text)
+            if s:
+                parts.append(s)
+        elif "貸借" in fname:
+            s = _format_bs(fname, text)
+            if s:
+                parts.append(s)
+
+    if not parts:
+        return ""
+    return (
+        "【財務データ（CSVから自動抽出・正確な数値）】\n"
+        "以下は財務CSVからプログラムで正確に抽出した数値です。\n"
+        "financial_analysisセクションにはこの数値をそのまま使用してください。\n"
+        "IMの記載と異なる場合でもCSVデータを優先してください。\n\n"
+        + "\n\n".join(parts)
+    )
