@@ -384,12 +384,11 @@ with st.sidebar:
         "ANTHROPIC_API_KEY": "anthropic_api_key",
         "OPENAI_API_KEY": "openai_api_key",
     }
+    _secret_name = _secrets_key_map.get(provider_info["env_key"], "")
     _default_key = ""
     try:
-        _default_key = st.secrets.get(
-            _secrets_key_map.get(provider_info["env_key"], ""), ""
-        )
-    except (KeyError, FileNotFoundError):
+        _default_key = st.secrets[_secret_name]
+    except (KeyError, FileNotFoundError, AttributeError):
         pass
     if not _default_key:
         _default_key = os.environ.get(provider_info["env_key"], "")
