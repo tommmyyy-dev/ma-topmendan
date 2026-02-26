@@ -613,7 +613,7 @@ elif result:
 
         fa = result.financial_analysis
         has_financial = (
-            fa.pl_trends or fa.monthly_quarterly_trends or fa.bs_trends or fa.key_metrics
+            fa.pl_trends or fa.bs_trends or fa.key_metrics
         )
 
         if not has_financial:
@@ -641,37 +641,21 @@ elif result:
                 df_pl = pd.DataFrame(pl_data)
                 st.dataframe(_fmt_number_cols(df_pl), use_container_width=True, hide_index=True)
 
-                # グラフ表示（売上高と営業利益）
-                chart_cols = [c for c in df_pl.columns if c != "期間" and df_pl[c].notna().any()]
-                if chart_cols:
-                    df_chart = df_pl.set_index("期間")[chart_cols].apply(pd.to_numeric, errors="coerce")
-                    st.bar_chart(df_chart)
+                # 売上高グラフ
+                revenue_col = f"売上高（{unit}）"
+                if revenue_col in df_pl.columns and df_pl[revenue_col].notna().any():
+                    st.markdown("**売上高推移**")
+                    df_rev = df_pl[["期間", revenue_col]].copy()
+                    df_rev[revenue_col] = pd.to_numeric(df_rev[revenue_col], errors="coerce")
+                    st.bar_chart(df_rev.set_index("期間"))
 
-            # --- 月次/四半期推移 ---
-            if fa.monthly_quarterly_trends:
-                trend_type = fa.monthly_quarterly_trends[0].trend_type
-                label = "月次推移" if trend_type == "monthly" else "四半期推移"
-                st.markdown(f"### {label}（{len(fa.monthly_quarterly_trends)}件）")
-                unit = fa.monthly_quarterly_trends[0].unit
-                mq_data = []
-                for m in fa.monthly_quarterly_trends:
-                    row = {
-                        "期間": m.period,
-                        f"売上高（{unit}）": m.revenue,
-                        f"営業利益（{unit}）": m.operating_profit,
-                    }
-                    if m.ordinary_profit is not None:
-                        row[f"経常利益（{unit}）"] = m.ordinary_profit
-                    if m.net_income is not None:
-                        row[f"当期純利益（{unit}）"] = m.net_income
-                    mq_data.append(row)
-                df_mq = pd.DataFrame(mq_data)
-                st.dataframe(_fmt_number_cols(df_mq), use_container_width=True, hide_index=True)
-
-                chart_cols = [c for c in df_mq.columns if c != "期間" and df_mq[c].notna().any()]
-                if chart_cols:
-                    df_chart = df_mq.set_index("期間")[chart_cols].apply(pd.to_numeric, errors="coerce")
-                    st.line_chart(df_chart)
+                # 営業利益グラフ
+                op_col = f"営業利益（{unit}）"
+                if op_col in df_pl.columns and df_pl[op_col].notna().any():
+                    st.markdown("**営業利益推移**")
+                    df_op = df_pl[["期間", op_col]].copy()
+                    df_op[op_col] = pd.to_numeric(df_op[op_col], errors="coerce")
+                    st.bar_chart(df_op.set_index("期間"))
 
             # --- BS推移 ---
             if fa.bs_trends:
