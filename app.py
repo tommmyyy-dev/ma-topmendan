@@ -139,6 +139,23 @@ st.markdown(
 
     /* サイドバー幅 */
     [data-testid="stSidebar"] { min-width: 280px; }
+
+    /* 案件一覧のコンパクト化 */
+    [data-testid="stSidebar"] .stButton > button {
+        padding-top: 0.25rem;
+        padding-bottom: 0.25rem;
+        min-height: 0;
+    }
+    .thread-item {
+        font-size: 0.82rem;
+        line-height: 1.3;
+        padding: 6px 0;
+        border-bottom: 1px solid #eee;
+    }
+    .thread-item .thread-date {
+        font-size: 0.7rem;
+        color: #999;
+    }
 </style>
 """,
     unsafe_allow_html=True,
@@ -368,33 +385,35 @@ with st.sidebar:
         ):
             t = threads[tid]
             label = t.get("company_name", "不明な案件")
-            created = t.get("created_at", "")[:10]
+            created_raw = t.get("created_at", "")
+            created_date = created_raw[:10] if created_raw else ""
             q_count = len(t.get("questions", []))
             is_active = st.session_state.current_thread == tid
 
-            btn_label = f"{'▶ ' if is_active else ''}{label}　({q_count}問)"
-            if st.button(
-                btn_label,
-                key=f"thread_{tid}",
-                use_container_width=True,
-                disabled=is_active,
-            ):
-                st.session_state.current_thread = tid
-                st.session_state.result = _dict_to_result(t)
-                ef_data = t.get("extracted_financials")
-                st.session_state.extracted_financials = (
-                    ExtractedFinancials.from_dict(ef_data) if ef_data else None
-                )
-                st.rerun()
-
-            if is_active:
-                # 削除ボタン
-                if st.button("🗑 この案件を削除", key=f"del_{tid}", type="secondary"):
+            col_sel, col_del = st.columns([5, 1])
+            with col_sel:
+                btn_label = f"{'▶ ' if is_active else ''}{label}（{q_count}問）\n{created_date}"
+                if st.button(
+                    btn_label,
+                    key=f"thread_{tid}",
+                    use_container_width=True,
+                    disabled=is_active,
+                ):
+                    st.session_state.current_thread = tid
+                    st.session_state.result = _dict_to_result(t)
+                    ef_data = t.get("extracted_financials")
+                    st.session_state.extracted_financials = (
+                        ExtractedFinancials.from_dict(ef_data) if ef_data else None
+                    )
+                    st.rerun()
+            with col_del:
+                if st.button("🗑", key=f"del_{tid}", help="この案件を削除"):
                     del st.session_state.threads[tid]
                     _save_threads(st.session_state.threads)
-                    st.session_state.current_thread = None
-                    st.session_state.result = None
-                    st.session_state.extracted_financials = None
+                    if st.session_state.current_thread == tid:
+                        st.session_state.current_thread = None
+                        st.session_state.result = None
+                        st.session_state.extracted_financials = None
                     st.rerun()
     else:
         st.caption("まだ案件がありません")
@@ -674,20 +693,55 @@ elif result:
                     row["営業利益"] = pl.operating_profit
                     row["経常利益"] = pl.ordinary_profit
                     row["当期純利益"] = pl.net_income
+                    # 利益率を計算
+                    if pl.revenue and pl.revenue > 0:
+                        if pl.gross_profit is not None:
+                            row["粗利率"] = f"{pl.gross_profit / pl.revenue * 100:.1f}%"
+                        else:
+                            row["粗利率"] = "-"
+                        if pl.operating_profit is not None:
+                            row["営業利益率"] = f"{pl.operating_profit / pl.revenue * 100:.1f}%"
+                        else:
+                            row["営業利益率"] = "-"
+                    else:
+                        row["粗利率"] = "-"
+                        row["営業利益率"] = "-"
                     pl_data.append(row)
                 df_pl = pd.DataFrame(pl_data)
-                st.dataframe(_fmt_number_cols(df_pl), use_container_width=True, hide_index=True)
 
-                # 売上高グラフ
+                # 利益率列はフォーマット対象外にする
+                rate_cols = ["粗利率", "営業利益率"]
+                df_display = _fmt_number_cols(df_pl.drop(columns=rate_cols, errors="ignore"))
+                for rc in rate_cols:
+                    if rc in df_pl.columns:
+                        df_display[rc] = df_pl[rc]
+                st.dataframe(df_display, use_container_width=True, hide_index=True)
+
+                # 売上高グラフ（数値ラベル付き）
                 if df_pl["売上高"].notna().any():
                     st.markdown("**売上高推移**")
+                    # 数値ラベルを表示
+                    label_parts = []
+                    for _, r in df_pl.iterrows():
+                        v = r["売上高"]
+                        if pd.notna(v) and v:
+                            label_parts.append(f"{r['期間']}: **{int(v):,}円**")
+                    if label_parts:
+                        st.caption("　|　".join(label_parts))
                     df_rev = df_pl[["期間", "売上高"]].copy()
                     df_rev["売上高"] = pd.to_numeric(df_rev["売上高"], errors="coerce")
                     st.bar_chart(df_rev.set_index("期間"))
 
-                # 営業利益グラフ
+                # 営業利益グラフ（数値ラベル付き）
                 if df_pl["営業利益"].notna().any():
                     st.markdown("**営業利益推移**")
+                    label_parts = []
+                    for _, r in df_pl.iterrows():
+                        v = r["営業利益"]
+                        if pd.notna(v) and v:
+                            label_parts.append(f"{r['期間']}: **{int(v):,}円**")
+                    if label_parts:
+                        st.caption("　|　".join(label_parts))
                     df_op = df_pl[["期間", "営業利益"]].copy()
                     df_op["営業利益"] = pd.to_numeric(df_op["営業利益"], errors="coerce")
                     st.bar_chart(df_op.set_index("期間"))
