@@ -379,11 +379,26 @@ with st.sidebar:
     )
     provider_info = PROVIDERS[provider]
 
+    # APIキーは Secrets > 環境変数 > 手入力 の優先順で取得
+    _secrets_key_map = {
+        "ANTHROPIC_API_KEY": "anthropic_api_key",
+        "OPENAI_API_KEY": "openai_api_key",
+    }
+    _default_key = ""
+    try:
+        _default_key = st.secrets.get(
+            _secrets_key_map.get(provider_info["env_key"], ""), ""
+        )
+    except (KeyError, FileNotFoundError):
+        pass
+    if not _default_key:
+        _default_key = os.environ.get(provider_info["env_key"], "")
+
     api_key = st.text_input(
         f"{provider} API Key",
-        value=os.environ.get(provider_info["env_key"], ""),
+        value=_default_key,
         type="password",
-        help=f"環境変数 {provider_info['env_key']} または .env でも設定可",
+        help="Secrets に保存済みなら自動入力されます",
     )
 
     model = st.selectbox("モデル", provider_info["models"], index=0)
