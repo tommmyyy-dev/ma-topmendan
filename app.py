@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from datetime import datetime
@@ -41,14 +42,14 @@ st.set_page_config(
     menu_items={
         "Get help": None,
         "Report a Bug": None,
-        "About": "M&A トップ面談 質問リスト自動生成ツール v1.2\n\n"
+        "About": "M&A トップ面談 質問リスト自動生成ツール v1.3\n\n"
                  "IM・財務諸表・試算表などの資料をアップロードし、"
                  "対象企業のトップ面談用の質問リスト・論点を自動生成します。",
     },
 )
 
 # ---------------------------------------------------------------------------
-# パスワード認証
+# パスワード認証（ログイン情報保存対応）
 # ---------------------------------------------------------------------------
 def _check_password() -> bool:
     """ログイン画面を表示し、認証済みならTrueを返す。"""
@@ -56,7 +57,6 @@ def _check_password() -> bool:
         return True
 
     # パスワードは Streamlit secrets または環境変数から取得
-    # secrets.toml: [passwords] app_password = "your_password"
     correct_password = ""
     try:
         correct_password = st.secrets["passwords"]["app_password"]
@@ -67,13 +67,28 @@ def _check_password() -> bool:
     if not correct_password:
         return True
 
+    # クエリパラメータによるログイン情報保存の確認
+    expected_token = hashlib.sha256(
+        f"ma-topmendan:{correct_password}".encode()
+    ).hexdigest()[:16]
+
+    if st.query_params.get("t") == expected_token:
+        st.session_state.authenticated = True
+        return True
+
     st.markdown("## 🔐 ログイン")
     st.markdown("このアプリを利用するにはパスワードを入力してください。")
     password = st.text_input("パスワード", type="password", key="login_password")
+    remember = st.checkbox(
+        "ログイン情報を保存する",
+        help="チェックすると次回から自動でログインします",
+    )
 
     if st.button("ログイン", type="primary"):
         if password == correct_password:
             st.session_state.authenticated = True
+            if remember:
+                st.query_params["t"] = expected_token
             st.rerun()
         else:
             st.error("パスワードが正しくありません。")
@@ -84,7 +99,7 @@ if not _check_password():
     st.stop()
 
 # ---------------------------------------------------------------------------
-# カスタムCSS（ハンバーガーメニュー日本語化含む）
+# カスタムCSS
 # ---------------------------------------------------------------------------
 st.markdown(
     """
@@ -120,41 +135,36 @@ st.markdown(
         content: "設定"; font-size: 14px;
     }
 
-    /* スレッドボタンのスタイル */
-    .thread-btn {
-        display: block;
-        width: 100%;
-        padding: 8px 12px;
-        margin-bottom: 4px;
-        border: none;
-        border-radius: 6px;
-        text-align: left;
-        cursor: pointer;
-        font-size: 0.9rem;
-    }
-    .thread-active {
-        background: #e3f2fd;
-        font-weight: 600;
-    }
-
     /* サイドバー幅 */
     [data-testid="stSidebar"] { min-width: 280px; }
 
     /* 案件一覧のコンパクト化 */
     [data-testid="stSidebar"] .stButton > button {
-        padding-top: 0.25rem;
-        padding-bottom: 0.25rem;
+        padding-top: 0.15rem;
+        padding-bottom: 0.15rem;
         min-height: 0;
+        font-size: 0.78rem;
+        line-height: 1.2;
     }
     .thread-item {
-        font-size: 0.82rem;
-        line-height: 1.3;
-        padding: 6px 0;
+        font-size: 0.78rem;
+        line-height: 1.2;
+        padding: 3px 0;
         border-bottom: 1px solid #eee;
     }
     .thread-item .thread-date {
-        font-size: 0.7rem;
+        font-size: 0.65rem;
         color: #999;
+    }
+
+    /* セクション見出し */
+    .section-header {
+        font-size: 1.2rem;
+        font-weight: 600;
+        margin-top: 1.5rem;
+        margin-bottom: 0.5rem;
+        padding-bottom: 0.3rem;
+        border-bottom: 2px solid #e0e0e0;
     }
 </style>
 """,
@@ -353,16 +363,16 @@ def _dict_to_result(d: dict) -> AnalysisResult:
 # セッション初期化
 # ---------------------------------------------------------------------------
 if "threads" not in st.session_state:
-    st.session_state.threads = _load_threads()  # {thread_id: {...}}
+    st.session_state.threads = _load_threads()
 if "current_thread" not in st.session_state:
-    st.session_state.current_thread = None  # thread_id or None (= 新規)
+    st.session_state.current_thread = None
 if "result" not in st.session_state:
     st.session_state.result = None
 if "extracted_financials" not in st.session_state:
     st.session_state.extracted_financials = None
 
 # ---------------------------------------------------------------------------
-# サイドバー
+# サイドバー（API設定 → 案件一覧の順）
 # ---------------------------------------------------------------------------
 with st.sidebar:
     # ---- 新規作成ボタン ----
@@ -374,7 +384,39 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # ---- 案件スレッド一覧 ----
+    # ---- API設定（上に配置）----
+    st.markdown("### API設定")
+
+    provider = st.selectbox(
+        "AIプロバイダー",
+        list(PROVIDERS.keys()),
+        index=1,
+    )
+    provider_info = PROVIDERS[provider]
+
+    api_key = st.text_input(
+        f"{provider} API Key",
+        type="password",
+    )
+
+    model = st.selectbox("モデル", provider_info["models"], index=0)
+
+    st.markdown("---")
+    st.markdown("### 使い方")
+    st.markdown(
+        """
+1. 「新しい案件の分析を作成」をクリック
+2. 資料ファイルをアップロード（最大10件）
+3. 「分析開始」を押す
+4. 結果を確認 → Excelダウンロード
+
+**対応形式**: PDF, Excel, Word, CSV, TSV, PowerPoint, HTML, JSON, テキスト, Markdown, ODS, RTF
+"""
+    )
+
+    st.markdown("---")
+
+    # ---- 案件スレッド一覧（下に配置）----
     st.markdown("### 案件一覧")
     threads = st.session_state.threads
     if threads:
@@ -417,38 +459,6 @@ with st.sidebar:
                     st.rerun()
     else:
         st.caption("まだ案件がありません")
-
-    st.markdown("---")
-
-    # ---- API設定 ----
-    st.markdown("### API設定")
-
-    provider = st.selectbox(
-        "AIプロバイダー",
-        list(PROVIDERS.keys()),
-        index=1,
-    )
-    provider_info = PROVIDERS[provider]
-
-    api_key = st.text_input(
-        f"{provider} API Key",
-        type="password",
-    )
-
-    model = st.selectbox("モデル", provider_info["models"], index=0)
-
-    st.markdown("---")
-    st.markdown("### 使い方")
-    st.markdown(
-        """
-1. 「新しい案件の分析を作成」をクリック
-2. 資料ファイルをアップロード（最大10件）
-3. 「分析開始」を押す
-4. 結果を確認 → Excelダウンロード
-
-**対応形式**: PDF, Excel, Word, CSV, TSV, PowerPoint, HTML, JSON, テキスト, Markdown, ODS, RTF
-"""
-    )
 
 # ---------------------------------------------------------------------------
 # メインエリア
@@ -572,9 +582,26 @@ if st.session_state.current_thread is None and result is None:
 """
         )
 
-# ---- 結果表示画面 ----
+# ---- 結果表示画面（タブなし・縦並び）----
 elif result:
-    # 企業名 + URL
+    import pandas as pd
+
+    def _fmt_number_cols(df: pd.DataFrame) -> pd.DataFrame:
+        """数値列をカンマ区切りフォーマットした文字列に変換"""
+        df_display = df.copy()
+        for col in df_display.columns:
+            if col == "期間":
+                continue
+            try:
+                numeric_vals = pd.to_numeric(df_display[col], errors="coerce")
+                df_display[col] = numeric_vals.apply(
+                    lambda x: f"{int(x):,}" if pd.notna(x) else "-"
+                )
+            except Exception:
+                pass
+        return df_display
+
+    # ---- ヘッダー ----
     st.markdown(f"## 📊 {result.company_name}")
     if result.company_url:
         st.markdown(
@@ -582,8 +609,6 @@ elif result:
             f"{result.company_url}</a></p>",
             unsafe_allow_html=True,
         )
-
-    st.info(result.summary)
 
     st.markdown(
         f"**質問数**: {len(result.questions)}問 / "
@@ -602,278 +627,271 @@ elif result:
         type="primary",
     )
 
+    # ==================================================================
+    # 1. 企業サマリー
+    # ==================================================================
     st.markdown("---")
+    st.markdown("### 🏢 企業サマリー")
+    st.markdown(result.summary)
 
-    # タブで質問リスト・論点・財務分析・企業サマリーを表示
-    tab1, tab2, tab3, tab4 = st.tabs(["💬 質問リスト", "📈 財務分析", "⚠️ 主要論点・リスク", "🏢 企業サマリー"])
+    # ==================================================================
+    # 2. 財務分析
+    # ==================================================================
+    st.markdown("---")
+    st.markdown("### 📈 財務分析")
 
-    with tab1:
-        all_cats = sorted(set(q.category_name for q in result.questions))
-        selected_cats = st.multiselect("カテゴリで絞り込み", all_cats, default=all_cats)
-        priority_filter = st.multiselect(
-            "優先度で絞り込み", ["A", "B", "C"], default=["A", "B", "C"]
+    fa = result.financial_analysis
+    ef: ExtractedFinancials | None = st.session_state.get("extracted_financials")
+
+    has_csv_data = ef and (ef.pl_list or ef.bs_list)
+    has_llm_pl = bool(fa.pl_trends)
+    has_llm_bs = bool(fa.bs_trends)
+    has_any_financial = has_csv_data or has_llm_pl or has_llm_bs or fa.key_metrics or fa.financial_comments
+
+    if not has_any_financial:
+        st.info("財務データが資料から抽出できませんでした。財務諸表・試算表を含む資料をアップロードすると、ここに財務分析が表示されます。")
+    else:
+        # --- 財務コメント (LLM) ---
+        if fa.financial_comments:
+            st.markdown("#### 財務分析サマリー")
+            st.info(fa.financial_comments)
+
+        # =========================================================
+        # P/L表示: CSV直接データ優先 → なければLLMデータをフォールバック
+        # =========================================================
+        if has_csv_data and ef.pl_list:
+            # --- CSV直接データ ---
+            st.markdown("#### 業績推移（P/L）")
+            st.caption(f"CSVから直接抽出（{len(ef.pl_list)}期分）・単位: 円")
+            pl_data = []
+            for pl in ef.pl_list:
+                row: dict = {"期間": pl.period_label}
+                row["売上高"] = pl.revenue
+                row["売上原価"] = pl.cost_of_sales
+                row["売上総利益"] = pl.gross_profit
+                row["販管費"] = pl.sga
+                row["営業利益"] = pl.operating_profit
+                row["経常利益"] = pl.ordinary_profit
+                row["当期純利益"] = pl.net_income
+                if pl.revenue and pl.revenue > 0:
+                    row["粗利率"] = f"{pl.gross_profit / pl.revenue * 100:.1f}%" if pl.gross_profit is not None else "-"
+                    row["営業利益率"] = f"{pl.operating_profit / pl.revenue * 100:.1f}%" if pl.operating_profit is not None else "-"
+                else:
+                    row["粗利率"] = "-"
+                    row["営業利益率"] = "-"
+                pl_data.append(row)
+            df_pl = pd.DataFrame(pl_data)
+            rate_cols = ["粗利率", "営業利益率"]
+            df_display = _fmt_number_cols(df_pl.drop(columns=rate_cols, errors="ignore"))
+            for rc in rate_cols:
+                if rc in df_pl.columns:
+                    df_display[rc] = df_pl[rc]
+            st.dataframe(df_display, use_container_width=True, hide_index=True)
+
+            # 売上高グラフ
+            if df_pl["売上高"].notna().any():
+                st.markdown("**売上高推移**")
+                label_parts = []
+                for _, r in df_pl.iterrows():
+                    v = r["売上高"]
+                    if pd.notna(v) and v:
+                        label_parts.append(f"{r['期間']}: **{int(v):,}円**")
+                if label_parts:
+                    st.caption("　|　".join(label_parts))
+                df_rev = df_pl[["期間", "売上高"]].copy()
+                df_rev["売上高"] = pd.to_numeric(df_rev["売上高"], errors="coerce")
+                st.bar_chart(df_rev.set_index("期間"))
+
+            # 営業利益グラフ
+            if df_pl["営業利益"].notna().any():
+                st.markdown("**営業利益推移**")
+                label_parts = []
+                for _, r in df_pl.iterrows():
+                    v = r["営業利益"]
+                    if pd.notna(v) and v:
+                        label_parts.append(f"{r['期間']}: **{int(v):,}円**")
+                if label_parts:
+                    st.caption("　|　".join(label_parts))
+                df_op = df_pl[["期間", "営業利益"]].copy()
+                df_op["営業利益"] = pd.to_numeric(df_op["営業利益"], errors="coerce")
+                st.bar_chart(df_op.set_index("期間"))
+
+        elif has_llm_pl:
+            # --- LLMフォールバック（IMから読み取った財務データ）---
+            st.markdown("#### 業績推移（P/L）")
+            unit = fa.pl_trends[0].unit if fa.pl_trends else "千円"
+            st.caption(f"IM等の資料からLLMが抽出（{len(fa.pl_trends)}期分）・単位: {unit}")
+            pl_data = []
+            for p in fa.pl_trends:
+                row: dict = {"期間": p.period}
+                row["売上高"] = p.revenue
+                row["営業利益"] = p.operating_profit
+                row["経常利益"] = p.ordinary_profit
+                row["当期純利益"] = p.net_income
+                row["EBITDA"] = p.ebitda
+                # 利益率（LLMデータでも計算）
+                if p.revenue and p.revenue > 0:
+                    row["営業利益率"] = f"{p.operating_profit / p.revenue * 100:.1f}%" if p.operating_profit is not None else "-"
+                else:
+                    row["営業利益率"] = "-"
+                pl_data.append(row)
+            df_pl = pd.DataFrame(pl_data)
+            rate_cols = ["営業利益率"]
+            df_display = _fmt_number_cols(df_pl.drop(columns=rate_cols, errors="ignore"))
+            for rc in rate_cols:
+                if rc in df_pl.columns:
+                    df_display[rc] = df_pl[rc]
+            st.dataframe(df_display, use_container_width=True, hide_index=True)
+
+            # 売上高グラフ
+            if df_pl["売上高"].notna().any():
+                st.markdown("**売上高推移**")
+                label_parts = []
+                for _, r in df_pl.iterrows():
+                    v = r["売上高"]
+                    if pd.notna(v) and v:
+                        label_parts.append(f"{r['期間']}: **{int(v):,}{unit}**")
+                if label_parts:
+                    st.caption("　|　".join(label_parts))
+                df_rev = df_pl[["期間", "売上高"]].copy()
+                df_rev["売上高"] = pd.to_numeric(df_rev["売上高"], errors="coerce")
+                st.bar_chart(df_rev.set_index("期間"))
+
+            # 営業利益グラフ
+            if df_pl["営業利益"].notna().any():
+                st.markdown("**営業利益推移**")
+                label_parts = []
+                for _, r in df_pl.iterrows():
+                    v = r["営業利益"]
+                    if pd.notna(v) and v:
+                        label_parts.append(f"{r['期間']}: **{int(v):,}{unit}**")
+                if label_parts:
+                    st.caption("　|　".join(label_parts))
+                df_op = df_pl[["期間", "営業利益"]].copy()
+                df_op["営業利益"] = pd.to_numeric(df_op["営業利益"], errors="coerce")
+                st.bar_chart(df_op.set_index("期間"))
+
+        # =========================================================
+        # BS表示: CSV直接データ優先 → なければLLMデータをフォールバック
+        # =========================================================
+        if has_csv_data and ef.bs_list:
+            st.markdown("#### BS推移（貸借対照表）")
+            st.caption(f"CSVから直接抽出（{len(ef.bs_list)}期分）・単位: 円")
+            bs_data = []
+            for bs in ef.bs_list:
+                row: dict = {"期間": bs.period_label}
+                row["総資産"] = bs.total_assets
+                row["負債合計"] = bs.total_liabilities
+                row["純資産"] = bs.net_assets
+                row["現預金"] = bs.cash
+                row["有利子負債"] = bs.interest_bearing_debt
+                bs_data.append(row)
+            df_bs = pd.DataFrame(bs_data)
+            st.dataframe(_fmt_number_cols(df_bs), use_container_width=True, hide_index=True)
+
+        elif has_llm_bs:
+            st.markdown("#### BS推移（貸借対照表）")
+            unit = fa.bs_trends[0].unit if fa.bs_trends else "千円"
+            st.caption(f"IM等の資料からLLMが抽出（{len(fa.bs_trends)}期分）・単位: {unit}")
+            bs_data = []
+            for b in fa.bs_trends:
+                bs_data.append({
+                    "期間": b.period,
+                    "総資産": b.total_assets,
+                    "負債合計": b.total_liabilities,
+                    "純資産": b.net_assets,
+                    "現預金": b.cash_and_deposits,
+                    "有利子負債": b.interest_bearing_debt,
+                })
+            df_bs = pd.DataFrame(bs_data)
+            st.dataframe(_fmt_number_cols(df_bs), use_container_width=True, hide_index=True)
+
+        # --- 主要財務指標 (LLM) ---
+        if fa.key_metrics:
+            st.markdown("#### 主要財務指標")
+            for km in fa.key_metrics:
+                if km.values:
+                    metric_data = []
+                    for v in km.values:
+                        metric_data.append({
+                            "期間": v.get("period", ""),
+                            km.metric_name: v.get("value", ""),
+                        })
+                    df_km = pd.DataFrame(metric_data)
+                    st.markdown(f"**{km.metric_name}**")
+                    st.dataframe(df_km, use_container_width=True, hide_index=True)
+
+    # ==================================================================
+    # 3. 主要論点・リスク
+    # ==================================================================
+    st.markdown("---")
+    st.markdown("### ⚠️ 主要論点・リスク")
+    st.markdown(f"**{len(result.key_issues)}件** の主要論点・リスクを特定")
+    for i, ki in enumerate(result.key_issues, 1):
+        risk_label = {"high": "🔴 高", "medium": "🟡 中", "low": "🟢 低"}.get(
+            ki.risk_level, ki.risk_level
         )
+        with st.expander(
+            f"{risk_label} | {i}. {ki.title}",
+            expanded=(ki.risk_level == "high"),
+        ):
+            st.markdown("**概要・詳細**")
+            st.markdown(ki.description)
+            if ki.ma_risk_implications:
+                st.markdown("---")
+                st.markdown("**M&Aリスクへの影響**")
+                st.markdown(ki.ma_risk_implications)
+            if ki.post_merger_solutions:
+                st.markdown("---")
+                st.markdown("**買収後の対策・解決策**")
+                st.markdown(ki.post_merger_solutions)
+            if ki.related_categories:
+                st.markdown("---")
+                st.markdown(
+                    f"**関連カテゴリ**: {', '.join(ki.related_categories)}"
+                )
 
-        filtered = [
-            q
-            for q in result.questions
-            if q.category_name in selected_cats and q.priority in priority_filter
-        ]
+    # ==================================================================
+    # 4. 質問リスト
+    # ==================================================================
+    st.markdown("---")
+    st.markdown("### 💬 質問リスト")
 
-        priority_order = {"A": 0, "B": 1, "C": 2}
-        filtered.sort(
-            key=lambda q: (priority_order.get(q.priority, 3), q.category_code)
-        )
+    all_cats = sorted(set(q.category_name for q in result.questions))
+    selected_cats = st.multiselect("カテゴリで絞り込み", all_cats, default=all_cats)
+    priority_filter = st.multiselect(
+        "優先度で絞り込み", ["A", "B", "C"], default=["A", "B", "C"]
+    )
 
-        priority_labels = {"A": "🔴 優先度A（必須確認）", "B": "🟡 優先度B（重要）", "C": "🟢 優先度C（補足）"}
-        current_priority = ""
-        for i, q in enumerate(filtered, 1):
-            if q.priority != current_priority:
-                current_priority = q.priority
-                st.markdown(f"### {priority_labels.get(q.priority, q.priority)}")
+    filtered = [
+        q
+        for q in result.questions
+        if q.category_name in selected_cats and q.priority in priority_filter
+    ]
 
-            with st.expander(
-                f"Q{i}. [{q.category_code}] {q.question[:80]}{'...' if len(q.question) > 80 else ''}",
-                expanded=(q.priority == "A"),
-            ):
-                st.markdown(f"**カテゴリ**: {q.category_name}")
-                st.markdown(f"**質問**: {q.question}")
-                st.markdown(f"**意図**: {q.intent}")
-                st.markdown(f"**背景**: {q.background}")
-                if q.source_documents:
-                    st.markdown(f"**関連資料**: {', '.join(q.source_documents)}")
-                if q.follow_up_points:
-                    st.markdown("**フォローアップ**:")
-                    for fp in q.follow_up_points:
-                        st.markdown(f"  - {fp}")
+    priority_order = {"A": 0, "B": 1, "C": 2}
+    filtered.sort(
+        key=lambda q: (priority_order.get(q.priority, 3), q.category_code)
+    )
 
-    with tab2:
-        import pandas as pd
+    priority_labels = {"A": "🔴 優先度A（必須確認）", "B": "🟡 優先度B（重要）", "C": "🟢 優先度C（補足）"}
+    current_priority = ""
+    for i, q in enumerate(filtered, 1):
+        if q.priority != current_priority:
+            current_priority = q.priority
+            st.markdown(f"#### {priority_labels.get(q.priority, q.priority)}")
 
-        def _fmt_number_cols(df: pd.DataFrame) -> pd.DataFrame:
-            """数値列をカンマ区切りフォーマットした文字列に変換"""
-            df_display = df.copy()
-            for col in df_display.columns:
-                if col == "期間":
-                    continue
-                try:
-                    numeric_vals = pd.to_numeric(df_display[col], errors="coerce")
-                    df_display[col] = numeric_vals.apply(
-                        lambda x: f"{int(x):,}" if pd.notna(x) else "-"
-                    )
-                except Exception:
-                    pass
-            return df_display
-
-        fa = result.financial_analysis
-        ef: ExtractedFinancials | None = st.session_state.get("extracted_financials")
-
-        has_csv_data = ef and (ef.pl_list or ef.bs_list)
-        has_llm_pl = bool(fa.pl_trends)
-        has_llm_bs = bool(fa.bs_trends)
-        has_any_financial = has_csv_data or has_llm_pl or has_llm_bs or fa.key_metrics or fa.financial_comments
-
-        if not has_any_financial:
-            st.info("財務データが資料から抽出できませんでした。財務諸表・試算表を含む資料をアップロードすると、ここに財務分析が表示されます。")
-        else:
-            # --- 財務コメント (LLM) ---
-            if fa.financial_comments:
-                st.markdown("### 財務分析サマリー")
-                st.info(fa.financial_comments)
-
-            # =========================================================
-            # P/L表示: CSV直接データ優先 → なければLLMデータをフォールバック
-            # =========================================================
-            if has_csv_data and ef.pl_list:
-                # --- CSV直接データ ---
-                st.markdown("### 業績推移（P/L）")
-                st.caption(f"CSVから直接抽出（{len(ef.pl_list)}期分）・単位: 円")
-                pl_data = []
-                for pl in ef.pl_list:
-                    row: dict = {"期間": pl.period_label}
-                    row["売上高"] = pl.revenue
-                    row["売上原価"] = pl.cost_of_sales
-                    row["売上総利益"] = pl.gross_profit
-                    row["販管費"] = pl.sga
-                    row["営業利益"] = pl.operating_profit
-                    row["経常利益"] = pl.ordinary_profit
-                    row["当期純利益"] = pl.net_income
-                    if pl.revenue and pl.revenue > 0:
-                        row["粗利率"] = f"{pl.gross_profit / pl.revenue * 100:.1f}%" if pl.gross_profit is not None else "-"
-                        row["営業利益率"] = f"{pl.operating_profit / pl.revenue * 100:.1f}%" if pl.operating_profit is not None else "-"
-                    else:
-                        row["粗利率"] = "-"
-                        row["営業利益率"] = "-"
-                    pl_data.append(row)
-                df_pl = pd.DataFrame(pl_data)
-                rate_cols = ["粗利率", "営業利益率"]
-                df_display = _fmt_number_cols(df_pl.drop(columns=rate_cols, errors="ignore"))
-                for rc in rate_cols:
-                    if rc in df_pl.columns:
-                        df_display[rc] = df_pl[rc]
-                st.dataframe(df_display, use_container_width=True, hide_index=True)
-
-                # 売上高グラフ
-                if df_pl["売上高"].notna().any():
-                    st.markdown("**売上高推移**")
-                    label_parts = []
-                    for _, r in df_pl.iterrows():
-                        v = r["売上高"]
-                        if pd.notna(v) and v:
-                            label_parts.append(f"{r['期間']}: **{int(v):,}円**")
-                    if label_parts:
-                        st.caption("　|　".join(label_parts))
-                    df_rev = df_pl[["期間", "売上高"]].copy()
-                    df_rev["売上高"] = pd.to_numeric(df_rev["売上高"], errors="coerce")
-                    st.bar_chart(df_rev.set_index("期間"))
-
-                # 営業利益グラフ
-                if df_pl["営業利益"].notna().any():
-                    st.markdown("**営業利益推移**")
-                    label_parts = []
-                    for _, r in df_pl.iterrows():
-                        v = r["営業利益"]
-                        if pd.notna(v) and v:
-                            label_parts.append(f"{r['期間']}: **{int(v):,}円**")
-                    if label_parts:
-                        st.caption("　|　".join(label_parts))
-                    df_op = df_pl[["期間", "営業利益"]].copy()
-                    df_op["営業利益"] = pd.to_numeric(df_op["営業利益"], errors="coerce")
-                    st.bar_chart(df_op.set_index("期間"))
-
-            elif has_llm_pl:
-                # --- LLMフォールバック（IMから読み取った財務データ）---
-                st.markdown("### 業績推移（P/L）")
-                unit = fa.pl_trends[0].unit if fa.pl_trends else "千円"
-                st.caption(f"IM等の資料からLLMが抽出（{len(fa.pl_trends)}期分）・単位: {unit}")
-                pl_data = []
-                for p in fa.pl_trends:
-                    row: dict = {"期間": p.period}
-                    row["売上高"] = p.revenue
-                    row["営業利益"] = p.operating_profit
-                    row["経常利益"] = p.ordinary_profit
-                    row["当期純利益"] = p.net_income
-                    row["EBITDA"] = p.ebitda
-                    # 利益率（LLMデータでも計算）
-                    if p.revenue and p.revenue > 0:
-                        row["営業利益率"] = f"{p.operating_profit / p.revenue * 100:.1f}%" if p.operating_profit is not None else "-"
-                    else:
-                        row["営業利益率"] = "-"
-                    pl_data.append(row)
-                df_pl = pd.DataFrame(pl_data)
-                rate_cols = ["営業利益率"]
-                df_display = _fmt_number_cols(df_pl.drop(columns=rate_cols, errors="ignore"))
-                for rc in rate_cols:
-                    if rc in df_pl.columns:
-                        df_display[rc] = df_pl[rc]
-                st.dataframe(df_display, use_container_width=True, hide_index=True)
-
-                # 売上高グラフ
-                if df_pl["売上高"].notna().any():
-                    st.markdown("**売上高推移**")
-                    label_parts = []
-                    for _, r in df_pl.iterrows():
-                        v = r["売上高"]
-                        if pd.notna(v) and v:
-                            label_parts.append(f"{r['期間']}: **{int(v):,}{unit}**")
-                    if label_parts:
-                        st.caption("　|　".join(label_parts))
-                    df_rev = df_pl[["期間", "売上高"]].copy()
-                    df_rev["売上高"] = pd.to_numeric(df_rev["売上高"], errors="coerce")
-                    st.bar_chart(df_rev.set_index("期間"))
-
-                # 営業利益グラフ
-                if df_pl["営業利益"].notna().any():
-                    st.markdown("**営業利益推移**")
-                    label_parts = []
-                    for _, r in df_pl.iterrows():
-                        v = r["営業利益"]
-                        if pd.notna(v) and v:
-                            label_parts.append(f"{r['期間']}: **{int(v):,}{unit}**")
-                    if label_parts:
-                        st.caption("　|　".join(label_parts))
-                    df_op = df_pl[["期間", "営業利益"]].copy()
-                    df_op["営業利益"] = pd.to_numeric(df_op["営業利益"], errors="coerce")
-                    st.bar_chart(df_op.set_index("期間"))
-
-            # =========================================================
-            # BS表示: CSV直接データ優先 → なければLLMデータをフォールバック
-            # =========================================================
-            if has_csv_data and ef.bs_list:
-                st.markdown("### BS推移（貸借対照表）")
-                st.caption(f"CSVから直接抽出（{len(ef.bs_list)}期分）・単位: 円")
-                bs_data = []
-                for bs in ef.bs_list:
-                    row: dict = {"期間": bs.period_label}
-                    row["総資産"] = bs.total_assets
-                    row["負債合計"] = bs.total_liabilities
-                    row["純資産"] = bs.net_assets
-                    row["現預金"] = bs.cash
-                    row["有利子負債"] = bs.interest_bearing_debt
-                    bs_data.append(row)
-                df_bs = pd.DataFrame(bs_data)
-                st.dataframe(_fmt_number_cols(df_bs), use_container_width=True, hide_index=True)
-
-            elif has_llm_bs:
-                st.markdown("### BS推移（貸借対照表）")
-                unit = fa.bs_trends[0].unit if fa.bs_trends else "千円"
-                st.caption(f"IM等の資料からLLMが抽出（{len(fa.bs_trends)}期分）・単位: {unit}")
-                bs_data = []
-                for b in fa.bs_trends:
-                    bs_data.append({
-                        "期間": b.period,
-                        "総資産": b.total_assets,
-                        "負債合計": b.total_liabilities,
-                        "純資産": b.net_assets,
-                        "現預金": b.cash_and_deposits,
-                        "有利子負債": b.interest_bearing_debt,
-                    })
-                df_bs = pd.DataFrame(bs_data)
-                st.dataframe(_fmt_number_cols(df_bs), use_container_width=True, hide_index=True)
-
-            # --- 主要財務指標 (LLM) ---
-            if fa.key_metrics:
-                st.markdown("### 主要財務指標")
-                for km in fa.key_metrics:
-                    if km.values:
-                        metric_data = []
-                        for v in km.values:
-                            metric_data.append({
-                                "期間": v.get("period", ""),
-                                km.metric_name: v.get("value", ""),
-                            })
-                        df_km = pd.DataFrame(metric_data)
-                        st.markdown(f"**{km.metric_name}**")
-                        st.dataframe(df_km, use_container_width=True, hide_index=True)
-
-    with tab3:
-        st.markdown(f"**{len(result.key_issues)}件** の主要論点・リスクを特定")
-        for i, ki in enumerate(result.key_issues, 1):
-            risk_label = {"high": "🔴 高", "medium": "🟡 中", "low": "🟢 低"}.get(
-                ki.risk_level, ki.risk_level
-            )
-            with st.expander(
-                f"{risk_label} | {i}. {ki.title}",
-                expanded=(ki.risk_level == "high"),
-            ):
-                st.markdown("**概要・詳細**")
-                st.markdown(ki.description)
-                if ki.ma_risk_implications:
-                    st.markdown("---")
-                    st.markdown("**M&Aリスクへの影響**")
-                    st.markdown(ki.ma_risk_implications)
-                if ki.post_merger_solutions:
-                    st.markdown("---")
-                    st.markdown("**買収後の対策・解決策**")
-                    st.markdown(ki.post_merger_solutions)
-                if ki.related_categories:
-                    st.markdown("---")
-                    st.markdown(
-                        f"**関連カテゴリ**: {', '.join(ki.related_categories)}"
-                    )
-
-    with tab4:
-        st.markdown("### 企業サマリー")
-        st.markdown(result.summary)
-        if result.company_url:
-            st.markdown(f"**企業URL**: [{result.company_url}]({result.company_url})")
+        with st.expander(
+            f"Q{i}. [{q.category_code}] {q.question[:80]}{'...' if len(q.question) > 80 else ''}",
+            expanded=(q.priority == "A"),
+        ):
+            st.markdown(f"**カテゴリ**: {q.category_name}")
+            st.markdown(f"**質問**: {q.question}")
+            st.markdown(f"**意図**: {q.intent}")
+            st.markdown(f"**背景**: {q.background}")
+            if q.source_documents:
+                st.markdown(f"**関連資料**: {', '.join(q.source_documents)}")
+            if q.follow_up_points:
+                st.markdown("**フォローアップ**:")
+                for fp in q.follow_up_points:
+                    st.markdown(f"  - {fp}")
