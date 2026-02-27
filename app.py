@@ -669,7 +669,7 @@ elif result:
             for pl in ef.pl_list:
                 row: dict = {"期間": pl.period_label}
                 row["売上高"] = pl.revenue
-                row["粗利"] = pl.gross_profit
+                row["売上総利益"] = pl.gross_profit
                 if pl.revenue and pl.revenue > 0:
                     row["粗利率"] = f"{pl.gross_profit / pl.revenue * 100:.1f}%" if pl.gross_profit is not None else "-"
                 else:
@@ -727,7 +727,7 @@ elif result:
             for p in fa.pl_trends:
                 row: dict = {"期間": p.period}
                 row["売上高"] = p.revenue
-                row["粗利"] = p.gross_profit
+                row["売上総利益"] = p.gross_profit
                 if p.revenue and p.revenue > 0:
                     row["粗利率"] = f"{p.gross_profit / p.revenue * 100:.1f}%" if p.gross_profit is not None else "-"
                 else:
