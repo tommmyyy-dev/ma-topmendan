@@ -199,6 +199,7 @@ def _financial_to_dict(fa: FinancialAnalysis) -> dict:
         "pl_trends": [
             {
                 "period": p.period, "revenue": p.revenue,
+                "gross_profit": p.gross_profit,
                 "operating_profit": p.operating_profit,
                 "ordinary_profit": p.ordinary_profit,
                 "net_income": p.net_income, "ebitda": p.ebitda, "unit": p.unit,
@@ -285,6 +286,7 @@ def _dict_to_financial(d: dict) -> FinancialAnalysis:
         pl_trends=[
             PLTrend(
                 period=p.get("period", ""), revenue=p.get("revenue"),
+                gross_profit=p.get("gross_profit"),
                 operating_profit=p.get("operating_profit"),
                 ordinary_profit=p.get("ordinary_profit"),
                 net_income=p.get("net_income"), ebitda=p.get("ebitda"),
@@ -667,18 +669,18 @@ elif result:
             for pl in ef.pl_list:
                 row: dict = {"期間": pl.period_label}
                 row["売上高"] = pl.revenue
-                row["売上原価"] = pl.cost_of_sales
-                row["売上総利益"] = pl.gross_profit
-                row["販管費"] = pl.sga
-                row["営業利益"] = pl.operating_profit
-                row["経常利益"] = pl.ordinary_profit
-                row["当期純利益"] = pl.net_income
+                row["粗利"] = pl.gross_profit
                 if pl.revenue and pl.revenue > 0:
                     row["粗利率"] = f"{pl.gross_profit / pl.revenue * 100:.1f}%" if pl.gross_profit is not None else "-"
-                    row["営業利益率"] = f"{pl.operating_profit / pl.revenue * 100:.1f}%" if pl.operating_profit is not None else "-"
                 else:
                     row["粗利率"] = "-"
+                row["営業利益"] = pl.operating_profit
+                if pl.revenue and pl.revenue > 0:
+                    row["営業利益率"] = f"{pl.operating_profit / pl.revenue * 100:.1f}%" if pl.operating_profit is not None else "-"
+                else:
                     row["営業利益率"] = "-"
+                row["経常利益"] = pl.ordinary_profit
+                row["当期純利益"] = pl.net_income
                 pl_data.append(row)
             df_pl = pd.DataFrame(pl_data)
             rate_cols = ["粗利率", "営業利益率"]
@@ -725,18 +727,21 @@ elif result:
             for p in fa.pl_trends:
                 row: dict = {"期間": p.period}
                 row["売上高"] = p.revenue
+                row["粗利"] = p.gross_profit
+                if p.revenue and p.revenue > 0:
+                    row["粗利率"] = f"{p.gross_profit / p.revenue * 100:.1f}%" if p.gross_profit is not None else "-"
+                else:
+                    row["粗利率"] = "-"
                 row["営業利益"] = p.operating_profit
-                row["経常利益"] = p.ordinary_profit
-                row["当期純利益"] = p.net_income
-                row["EBITDA"] = p.ebitda
-                # 利益率（LLMデータでも計算）
                 if p.revenue and p.revenue > 0:
                     row["営業利益率"] = f"{p.operating_profit / p.revenue * 100:.1f}%" if p.operating_profit is not None else "-"
                 else:
                     row["営業利益率"] = "-"
+                row["経常利益"] = p.ordinary_profit
+                row["当期純利益"] = p.net_income
                 pl_data.append(row)
             df_pl = pd.DataFrame(pl_data)
-            rate_cols = ["営業利益率"]
+            rate_cols = ["粗利率", "営業利益率"]
             df_display = _fmt_number_cols(df_pl.drop(columns=rate_cols, errors="ignore"))
             for rc in rate_cols:
                 if rc in df_pl.columns:

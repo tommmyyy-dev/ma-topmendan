@@ -166,10 +166,10 @@ IMや他の資料の記載と異なる場合でも、CSV自動抽出データを
       {{
         "period": "2023年3月期",
         "revenue": 1000000,
+        "gross_profit": 400000,
         "operating_profit": 100000,
         "ordinary_profit": 95000,
         "net_income": 65000,
-        "ebitda": 120000,
         "unit": "千円"
       }}
     ],
@@ -236,6 +236,7 @@ class KeyIssue:
 class PLTrend:
     period: str
     revenue: float | None = None
+    gross_profit: float | None = None
     operating_profit: float | None = None
     ordinary_profit: float | None = None
     net_income: float | None = None
@@ -316,6 +317,7 @@ def _parse_financial_analysis(data: dict) -> FinancialAnalysis:
         PLTrend(
             period=p.get("period", ""),
             revenue=p.get("revenue"),
+            gross_profit=p.get("gross_profit"),
             operating_profit=p.get("operating_profit"),
             ordinary_profit=p.get("ordinary_profit"),
             net_income=p.get("net_income"),
