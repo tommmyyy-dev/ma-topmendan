@@ -402,21 +402,8 @@ with st.sidebar:
     model = st.selectbox("モデル", provider_info["models"], index=0)
 
     st.markdown("---")
-    st.markdown("### 使い方")
-    st.markdown(
-        """
-1. 「新しい案件の分析を作成」をクリック
-2. 資料ファイルをアップロード（最大10件）
-3. 「分析開始」を押す
-4. 結果を確認 → Excelダウンロード
 
-**対応形式**: PDF, Excel, Word, CSV, TSV, PowerPoint, HTML, JSON, テキスト, Markdown, ODS, RTF
-"""
-    )
-
-    st.markdown("---")
-
-    # ---- 案件スレッド一覧（下に配置）----
+    # ---- 案件スレッド一覧 ----
     st.markdown("### 案件一覧")
     threads = st.session_state.threads
     if threads:
@@ -459,6 +446,19 @@ with st.sidebar:
                     st.rerun()
     else:
         st.caption("まだ案件がありません")
+
+    st.markdown("---")
+    st.markdown("### 使い方")
+    st.markdown(
+        """
+1. 「新しい案件の分析を作成」をクリック
+2. 資料ファイルをアップロード（最大10件）
+3. 「分析開始」を押す
+4. 結果を確認 → Excelダウンロード
+
+**対応形式**: PDF, Excel, Word, CSV, TSV, PowerPoint, HTML, JSON, テキスト, Markdown, ODS, RTF
+"""
+    )
 
 # ---------------------------------------------------------------------------
 # メインエリア
