@@ -669,9 +669,11 @@ elif result:
         ef: ExtractedFinancials | None = st.session_state.get("extracted_financials")
 
         has_csv_data = ef and (ef.pl_list or ef.bs_list)
-        has_llm_financial = fa.key_metrics or fa.financial_comments
+        has_llm_pl = bool(fa.pl_trends)
+        has_llm_bs = bool(fa.bs_trends)
+        has_any_financial = has_csv_data or has_llm_pl or has_llm_bs or fa.key_metrics or fa.financial_comments
 
-        if not has_csv_data and not has_llm_financial:
+        if not has_any_financial:
             st.info("財務データが資料から抽出できませんでした。財務諸表・試算表を含む資料をアップロードすると、ここに財務分析が表示されます。")
         else:
             # --- 財務コメント (LLM) ---
@@ -679,8 +681,11 @@ elif result:
                 st.markdown("### 財務分析サマリー")
                 st.info(fa.financial_comments)
 
-            # --- 業績推移 (P/L) - CSV直接データ ---
+            # =========================================================
+            # P/L表示: CSV直接データ優先 → なければLLMデータをフォールバック
+            # =========================================================
             if has_csv_data and ef.pl_list:
+                # --- CSV直接データ ---
                 st.markdown("### 業績推移（P/L）")
                 st.caption(f"CSVから直接抽出（{len(ef.pl_list)}期分）・単位: 円")
                 pl_data = []
@@ -693,23 +698,14 @@ elif result:
                     row["営業利益"] = pl.operating_profit
                     row["経常利益"] = pl.ordinary_profit
                     row["当期純利益"] = pl.net_income
-                    # 利益率を計算
                     if pl.revenue and pl.revenue > 0:
-                        if pl.gross_profit is not None:
-                            row["粗利率"] = f"{pl.gross_profit / pl.revenue * 100:.1f}%"
-                        else:
-                            row["粗利率"] = "-"
-                        if pl.operating_profit is not None:
-                            row["営業利益率"] = f"{pl.operating_profit / pl.revenue * 100:.1f}%"
-                        else:
-                            row["営業利益率"] = "-"
+                        row["粗利率"] = f"{pl.gross_profit / pl.revenue * 100:.1f}%" if pl.gross_profit is not None else "-"
+                        row["営業利益率"] = f"{pl.operating_profit / pl.revenue * 100:.1f}%" if pl.operating_profit is not None else "-"
                     else:
                         row["粗利率"] = "-"
                         row["営業利益率"] = "-"
                     pl_data.append(row)
                 df_pl = pd.DataFrame(pl_data)
-
-                # 利益率列はフォーマット対象外にする
                 rate_cols = ["粗利率", "営業利益率"]
                 df_display = _fmt_number_cols(df_pl.drop(columns=rate_cols, errors="ignore"))
                 for rc in rate_cols:
@@ -717,10 +713,9 @@ elif result:
                         df_display[rc] = df_pl[rc]
                 st.dataframe(df_display, use_container_width=True, hide_index=True)
 
-                # 売上高グラフ（数値ラベル付き）
+                # 売上高グラフ
                 if df_pl["売上高"].notna().any():
                     st.markdown("**売上高推移**")
-                    # 数値ラベルを表示
                     label_parts = []
                     for _, r in df_pl.iterrows():
                         v = r["売上高"]
@@ -732,7 +727,7 @@ elif result:
                     df_rev["売上高"] = pd.to_numeric(df_rev["売上高"], errors="coerce")
                     st.bar_chart(df_rev.set_index("期間"))
 
-                # 営業利益グラフ（数値ラベル付き）
+                # 営業利益グラフ
                 if df_pl["営業利益"].notna().any():
                     st.markdown("**営業利益推移**")
                     label_parts = []
@@ -746,7 +741,64 @@ elif result:
                     df_op["営業利益"] = pd.to_numeric(df_op["営業利益"], errors="coerce")
                     st.bar_chart(df_op.set_index("期間"))
 
-            # --- BS推移 - CSV直接データ ---
+            elif has_llm_pl:
+                # --- LLMフォールバック（IMから読み取った財務データ）---
+                st.markdown("### 業績推移（P/L）")
+                unit = fa.pl_trends[0].unit if fa.pl_trends else "千円"
+                st.caption(f"IM等の資料からLLMが抽出（{len(fa.pl_trends)}期分）・単位: {unit}")
+                pl_data = []
+                for p in fa.pl_trends:
+                    row: dict = {"期間": p.period}
+                    row["売上高"] = p.revenue
+                    row["営業利益"] = p.operating_profit
+                    row["経常利益"] = p.ordinary_profit
+                    row["当期純利益"] = p.net_income
+                    row["EBITDA"] = p.ebitda
+                    # 利益率（LLMデータでも計算）
+                    if p.revenue and p.revenue > 0:
+                        row["営業利益率"] = f"{p.operating_profit / p.revenue * 100:.1f}%" if p.operating_profit is not None else "-"
+                    else:
+                        row["営業利益率"] = "-"
+                    pl_data.append(row)
+                df_pl = pd.DataFrame(pl_data)
+                rate_cols = ["営業利益率"]
+                df_display = _fmt_number_cols(df_pl.drop(columns=rate_cols, errors="ignore"))
+                for rc in rate_cols:
+                    if rc in df_pl.columns:
+                        df_display[rc] = df_pl[rc]
+                st.dataframe(df_display, use_container_width=True, hide_index=True)
+
+                # 売上高グラフ
+                if df_pl["売上高"].notna().any():
+                    st.markdown("**売上高推移**")
+                    label_parts = []
+                    for _, r in df_pl.iterrows():
+                        v = r["売上高"]
+                        if pd.notna(v) and v:
+                            label_parts.append(f"{r['期間']}: **{int(v):,}{unit}**")
+                    if label_parts:
+                        st.caption("　|　".join(label_parts))
+                    df_rev = df_pl[["期間", "売上高"]].copy()
+                    df_rev["売上高"] = pd.to_numeric(df_rev["売上高"], errors="coerce")
+                    st.bar_chart(df_rev.set_index("期間"))
+
+                # 営業利益グラフ
+                if df_pl["営業利益"].notna().any():
+                    st.markdown("**営業利益推移**")
+                    label_parts = []
+                    for _, r in df_pl.iterrows():
+                        v = r["営業利益"]
+                        if pd.notna(v) and v:
+                            label_parts.append(f"{r['期間']}: **{int(v):,}{unit}**")
+                    if label_parts:
+                        st.caption("　|　".join(label_parts))
+                    df_op = df_pl[["期間", "営業利益"]].copy()
+                    df_op["営業利益"] = pd.to_numeric(df_op["営業利益"], errors="coerce")
+                    st.bar_chart(df_op.set_index("期間"))
+
+            # =========================================================
+            # BS表示: CSV直接データ優先 → なければLLMデータをフォールバック
+            # =========================================================
             if has_csv_data and ef.bs_list:
                 st.markdown("### BS推移（貸借対照表）")
                 st.caption(f"CSVから直接抽出（{len(ef.bs_list)}期分）・単位: 円")
@@ -759,6 +811,23 @@ elif result:
                     row["現預金"] = bs.cash
                     row["有利子負債"] = bs.interest_bearing_debt
                     bs_data.append(row)
+                df_bs = pd.DataFrame(bs_data)
+                st.dataframe(_fmt_number_cols(df_bs), use_container_width=True, hide_index=True)
+
+            elif has_llm_bs:
+                st.markdown("### BS推移（貸借対照表）")
+                unit = fa.bs_trends[0].unit if fa.bs_trends else "千円"
+                st.caption(f"IM等の資料からLLMが抽出（{len(fa.bs_trends)}期分）・単位: {unit}")
+                bs_data = []
+                for b in fa.bs_trends:
+                    bs_data.append({
+                        "期間": b.period,
+                        "総資産": b.total_assets,
+                        "負債合計": b.total_liabilities,
+                        "純資産": b.net_assets,
+                        "現預金": b.cash_and_deposits,
+                        "有利子負債": b.interest_bearing_debt,
+                    })
                 df_bs = pd.DataFrame(bs_data)
                 st.dataframe(_fmt_number_cols(df_bs), use_container_width=True, hide_index=True)
 

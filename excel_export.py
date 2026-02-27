@@ -152,9 +152,11 @@ def export_to_excel(
     ef = extracted_financials
     fa = result.financial_analysis
     has_csv = ef and (ef.pl_list or ef.bs_list)
-    has_llm = fa.key_metrics or fa.financial_comments
+    has_llm_pl = bool(fa.pl_trends)
+    has_llm_bs = bool(fa.bs_trends)
+    has_any = has_csv or has_llm_pl or has_llm_bs or fa.key_metrics or fa.financial_comments
 
-    if has_csv or has_llm:
+    if has_any:
         ws_fin = wb.create_sheet("財務分析")
         fin_row = 1
 
@@ -169,9 +171,10 @@ def export_to_excel(
             ws_fin.merge_cells(start_row=fin_row, start_column=1, end_row=fin_row, end_column=8)
             fin_row += 2
 
-        # --- 業績推移 (P/L) - CSV直接データ ---
+        # --- 業績推移 (P/L) ---
         if has_csv and ef.pl_list:
-            ws_fin.cell(row=fin_row, column=1, value=f"業績推移（P/L）　単位: 円　（{len(ef.pl_list)}期分）")
+            # CSV直接データ
+            ws_fin.cell(row=fin_row, column=1, value=f"業績推移（P/L）　単位: 円　（{len(ef.pl_list)}期分・CSV抽出）")
             ws_fin.cell(row=fin_row, column=1).font = Font(name="Yu Gothic", bold=True, size=11)
             fin_row += 1
 
@@ -206,9 +209,45 @@ def export_to_excel(
                 fin_row += 1
             fin_row += 1
 
-        # --- BS推移 - CSV直接データ ---
+        elif has_llm_pl:
+            # LLMフォールバック（IM等から抽出）
+            unit = fa.pl_trends[0].unit if fa.pl_trends else "千円"
+            ws_fin.cell(row=fin_row, column=1, value=f"業績推移（P/L）　単位: {unit}　（{len(fa.pl_trends)}期分・IM抽出）")
+            ws_fin.cell(row=fin_row, column=1).font = Font(name="Yu Gothic", bold=True, size=11)
+            fin_row += 1
+
+            pl_headers = [
+                ("期間", 22), ("売上高", 18), ("営業利益", 18),
+                ("経常利益", 18), ("当期純利益", 18), ("EBITDA", 18),
+            ]
+            for ci, (h, w) in enumerate(pl_headers, 1):
+                cell = ws_fin.cell(row=fin_row, column=ci, value=h)
+                cell.font = _HEADER_FONT
+                cell.fill = _HEADER_FILL
+                cell.alignment = _WRAP_ALIGNMENT
+                cell.border = _THIN_BORDER
+                ws_fin.column_dimensions[get_column_letter(ci)].width = max(
+                    ws_fin.column_dimensions[get_column_letter(ci)].width or 0, w
+                )
+            fin_row += 1
+
+            for p in fa.pl_trends:
+                ws_fin.cell(row=fin_row, column=1, value=p.period)
+                ws_fin.cell(row=fin_row, column=2, value=p.revenue)
+                ws_fin.cell(row=fin_row, column=3, value=p.operating_profit)
+                ws_fin.cell(row=fin_row, column=4, value=p.ordinary_profit)
+                ws_fin.cell(row=fin_row, column=5, value=p.net_income)
+                ws_fin.cell(row=fin_row, column=6, value=p.ebitda)
+                for ci in range(1, 7):
+                    _apply_style(ws_fin, fin_row, ci, font=_BODY_FONT)
+                    if ci >= 2:
+                        ws_fin.cell(row=fin_row, column=ci).number_format = '#,##0'
+                fin_row += 1
+            fin_row += 1
+
+        # --- BS推移 ---
         if has_csv and ef.bs_list:
-            ws_fin.cell(row=fin_row, column=1, value=f"BS推移（貸借対照表）　単位: 円　（{len(ef.bs_list)}期分）")
+            ws_fin.cell(row=fin_row, column=1, value=f"BS推移（貸借対照表）　単位: 円　（{len(ef.bs_list)}期分・CSV抽出）")
             ws_fin.cell(row=fin_row, column=1).font = Font(name="Yu Gothic", bold=True, size=11)
             fin_row += 1
 
@@ -231,6 +270,39 @@ def export_to_excel(
                 ws_fin.cell(row=fin_row, column=4, value=bs.net_assets)
                 ws_fin.cell(row=fin_row, column=5, value=bs.cash)
                 ws_fin.cell(row=fin_row, column=6, value=bs.interest_bearing_debt)
+                for ci in range(1, 7):
+                    _apply_style(ws_fin, fin_row, ci, font=_BODY_FONT)
+                    if ci >= 2:
+                        ws_fin.cell(row=fin_row, column=ci).number_format = '#,##0'
+                fin_row += 1
+            fin_row += 1
+
+        elif has_llm_bs:
+            # LLMフォールバック（IM等から抽出）
+            unit = fa.bs_trends[0].unit if fa.bs_trends else "千円"
+            ws_fin.cell(row=fin_row, column=1, value=f"BS推移（貸借対照表）　単位: {unit}　（{len(fa.bs_trends)}期分・IM抽出）")
+            ws_fin.cell(row=fin_row, column=1).font = Font(name="Yu Gothic", bold=True, size=11)
+            fin_row += 1
+
+            bs_headers = [
+                ("期間", 22), ("総資産", 18), ("負債合計", 18),
+                ("純資産", 18), ("現預金", 18), ("有利子負債", 18),
+            ]
+            for ci, (h, w) in enumerate(bs_headers, 1):
+                cell = ws_fin.cell(row=fin_row, column=ci, value=h)
+                cell.font = _HEADER_FONT
+                cell.fill = _HEADER_FILL
+                cell.alignment = _WRAP_ALIGNMENT
+                cell.border = _THIN_BORDER
+            fin_row += 1
+
+            for b in fa.bs_trends:
+                ws_fin.cell(row=fin_row, column=1, value=b.period)
+                ws_fin.cell(row=fin_row, column=2, value=b.total_assets)
+                ws_fin.cell(row=fin_row, column=3, value=b.total_liabilities)
+                ws_fin.cell(row=fin_row, column=4, value=b.net_assets)
+                ws_fin.cell(row=fin_row, column=5, value=b.cash_and_deposits)
+                ws_fin.cell(row=fin_row, column=6, value=b.interest_bearing_debt)
                 for ci in range(1, 7):
                     _apply_style(ws_fin, fin_row, ci, font=_BODY_FONT)
                     if ci >= 2:
