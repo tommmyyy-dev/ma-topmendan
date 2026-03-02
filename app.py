@@ -172,14 +172,107 @@ st.markdown(
 )
 
 # ---------------------------------------------------------------------------
-# データ永続化 (JSONファイル)
+# データ永続化 (Google Sheets / ローカルJSONフォールバック)
 # ---------------------------------------------------------------------------
 DATA_DIR = Path(__file__).parent / "data"
 DATA_DIR.mkdir(exist_ok=True)
 THREADS_FILE = DATA_DIR / "threads.json"
 
+SPREADSHEET_ID = "1Ee5cSvpHTa9qXPAT_uWGBSJ8Gcm_2Wxyj1t9lRfImBA"
+
+
+def _get_gspread_client():
+    """Google Sheets接続クライアントを取得する（キャッシュ付き）"""
+    try:
+        import gspread
+        from google.oauth2.service_account import Credentials
+
+        scopes = [
+            "https://www.googleapis.com/auth/spreadsheets",
+        ]
+        creds_info = dict(st.secrets.get("gcp_service_account", {}))
+        if not creds_info:
+            return None
+        creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
+        return gspread.authorize(creds)
+    except Exception:
+        return None
+
+
+def _load_threads_from_gsheet() -> dict:
+    """Google Sheetsからスレッドデータを読み込む"""
+    gc = _get_gspread_client()
+    if gc is None:
+        return {}
+    try:
+        sh = gc.open_by_key(SPREADSHEET_ID)
+        ws = sh.worksheet("threads")
+        rows = ws.get_all_values()
+        if len(rows) <= 1:  # ヘッダーのみ
+            return {}
+        threads = {}
+        for row in rows[1:]:  # ヘッダーをスキップ
+            if len(row) >= 3 and row[0]:
+                tid = row[0]
+                try:
+                    threads[tid] = json.loads(row[2])
+                except (json.JSONDecodeError, IndexError):
+                    pass
+        return threads
+    except Exception:
+        return {}
+
+
+def _save_thread_to_gsheet(thread_id: str, thread_data: dict) -> bool:
+    """Google Sheetsにスレッドを追加・更新する"""
+    gc = _get_gspread_client()
+    if gc is None:
+        return False
+    try:
+        sh = gc.open_by_key(SPREADSHEET_ID)
+        ws = sh.worksheet("threads")
+        rows = ws.get_all_values()
+
+        company_name = thread_data.get("company_name", "不明")
+        json_str = json.dumps(thread_data, ensure_ascii=False)
+
+        # 既存行を探す
+        for i, row in enumerate(rows[1:], start=2):
+            if row[0] == thread_id:
+                ws.update(f"A{i}:C{i}", [[thread_id, company_name, json_str]])
+                return True
+
+        # 新規追加
+        ws.append_row([thread_id, company_name, json_str], value_input_option="RAW")
+        return True
+    except Exception:
+        return False
+
+
+def _delete_thread_from_gsheet(thread_id: str) -> bool:
+    """Google Sheetsからスレッドを削除する"""
+    gc = _get_gspread_client()
+    if gc is None:
+        return False
+    try:
+        sh = gc.open_by_key(SPREADSHEET_ID)
+        ws = sh.worksheet("threads")
+        rows = ws.get_all_values()
+        for i, row in enumerate(rows[1:], start=2):
+            if row[0] == thread_id:
+                ws.delete_rows(i)
+                return True
+        return False
+    except Exception:
+        return False
+
 
 def _load_threads() -> dict:
+    """スレッドを読み込む（GSheet優先、ローカルフォールバック）"""
+    threads = _load_threads_from_gsheet()
+    if threads:
+        return threads
+    # GSheet接続不可時はローカルJSON
     if THREADS_FILE.exists():
         try:
             return json.loads(THREADS_FILE.read_text(encoding="utf-8"))
@@ -189,6 +282,7 @@ def _load_threads() -> dict:
 
 
 def _save_threads(threads: dict):
+    """全スレッドを保存（ローカルJSON + GSheet個別は呼び出し元で）"""
     THREADS_FILE.write_text(
         json.dumps(threads, ensure_ascii=False, indent=2), encoding="utf-8"
     )
@@ -441,6 +535,7 @@ with st.sidebar:
                 if st.button("🗑", key=f"del_{tid}", help="この案件を削除"):
                     del st.session_state.threads[tid]
                     _save_threads(st.session_state.threads)
+                    _delete_thread_from_gsheet(tid)
                     if st.session_state.current_thread == tid:
                         st.session_state.current_thread = None
                         st.session_state.result = None
@@ -561,6 +656,7 @@ if st.session_state.current_thread is None and result is None:
             thread_data = _result_to_dict(new_result, fin_data)
             st.session_state.threads[thread_id] = thread_data
             _save_threads(st.session_state.threads)
+            _save_thread_to_gsheet(thread_id, thread_data)
 
             st.session_state.current_thread = thread_id
             st.session_state.result = new_result

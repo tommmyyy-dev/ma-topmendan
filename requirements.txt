@@ -9,3 +9,5 @@ python-pptx>=1.0.0
 odfpy>=1.4.0
 striprtf>=0.0.26
 beautifulsoup4>=4.12.0
+gspread>=6.0.0
+google-auth>=2.0.0
