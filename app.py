@@ -396,8 +396,19 @@ with st.sidebar:
     )
     provider_info = PROVIDERS[provider]
 
+    # secrets / 環境変数からAPI Keyを自動取得
+    _env_key = provider_info.get("env_key", "")
+    _default_key = ""
+    try:
+        _default_key = st.secrets.get(_env_key, "")
+    except (FileNotFoundError, KeyError):
+        pass
+    if not _default_key:
+        _default_key = os.environ.get(_env_key, "")
+
     api_key = st.text_input(
         f"{provider} API Key",
+        value=_default_key,
         type="password",
     )
 
