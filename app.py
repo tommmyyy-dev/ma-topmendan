@@ -392,7 +392,7 @@ with st.sidebar:
     provider = st.selectbox(
         "AIプロバイダー",
         list(PROVIDERS.keys()),
-        index=1,
+        index=0,
     )
     provider_info = PROVIDERS[provider]
 
