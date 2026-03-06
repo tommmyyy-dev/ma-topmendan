@@ -1,4 +1,4 @@
-"""M&A トップ面談 質問リスト自動生成ツール - Streamlit UI"""
+"""M&A Agent Team 分析ツール — Streamlit UI"""
 
 from __future__ import annotations
 
@@ -11,24 +11,8 @@ from pathlib import Path
 import streamlit as st
 from dotenv import load_dotenv
 
-from analyzer import (
-    PROVIDERS,
-    AnalysisResult,
-    FinancialAnalysis,
-    analyze_documents,
-)
-from excel_export import export_to_excel
-from parsers import (
-    SUPPORTED_EXTENSIONS,
-    ExtractedFinancials,
-    ParsedDocument,
-    apply_period_labels_from_llm,
-    extract_financial_data,
-    extract_financial_summary,
-    parse_file,
-    PL_DISPLAY_NAMES,
-    BS_DISPLAY_NAMES,
-)
+from agents import DEFAULT_BUYER_PROFILE, run_full_analysis
+from parsers import SUPPORTED_EXTENSIONS, parse_file, extract_financial_summary
 
 load_dotenv()
 
@@ -36,38 +20,34 @@ load_dotenv()
 # ページ設定
 # ---------------------------------------------------------------------------
 st.set_page_config(
-    page_title="M&A トップ面談 質問ジェネレーター",
-    page_icon="📋",
+    page_title="M&A Agent Team 分析",
+    page_icon="🤖",
     layout="wide",
     menu_items={
         "Get help": None,
         "Report a Bug": None,
-        "About": "M&A トップ面談 質問リスト自動生成ツール v1.3\n\n"
-                 "IM・財務諸表・試算表などの資料をアップロードし、"
-                 "対象企業のトップ面談用の質問リスト・論点を自動生成します。",
+        "About": "M&A Agent Team 分析ツール v2.0\n\n"
+        "IM・財務資料をアップロードすると、3つのAIエージェントが"
+        "並列で案件分析・市場調査・Red Teamレビューを実行します。",
     },
 )
 
 # ---------------------------------------------------------------------------
-# パスワード認証（ログイン情報保存対応）
+# パスワード認証
 # ---------------------------------------------------------------------------
 def _check_password() -> bool:
-    """ログイン画面を表示し、認証済みならTrueを返す。"""
     if st.session_state.get("authenticated"):
         return True
 
-    # パスワードは Streamlit secrets または環境変数から取得
     correct_password = ""
     try:
         correct_password = st.secrets["passwords"]["app_password"]
     except (KeyError, FileNotFoundError):
         correct_password = os.environ.get("APP_PASSWORD", "")
 
-    # パスワード未設定の場合は認証スキップ（ローカル開発用）
     if not correct_password:
         return True
 
-    # クエリパラメータによるログイン情報保存の確認
     expected_token = hashlib.sha256(
         f"ma-topmendan:{correct_password}".encode()
     ).hexdigest()[:16]
@@ -77,12 +57,8 @@ def _check_password() -> bool:
         return True
 
     st.markdown("## 🔐 ログイン")
-    st.markdown("このアプリを利用するにはパスワードを入力してください。")
     password = st.text_input("パスワード", type="password", key="login_password")
-    remember = st.checkbox(
-        "ログイン情報を保存する",
-        help="チェックすると次回から自動でログインします",
-    )
+    remember = st.checkbox("ログイン情報を保存する")
 
     if st.button("ログイン", type="primary"):
         if password == correct_password:
@@ -104,75 +80,26 @@ if not _check_password():
 st.markdown(
     """
 <style>
-    .main-header {
-        font-size: 1.6rem;
-        font-weight: 700;
-        margin-bottom: 0.2rem;
-    }
-    .sub-header {
-        font-size: 0.95rem;
-        color: #666;
-        margin-bottom: 1.5rem;
-    }
-    .company-url {
-        font-size: 0.9rem;
-        margin-top: -0.5rem;
-        margin-bottom: 1rem;
-    }
-    .company-url a {
-        color: #1a73e8;
-        text-decoration: none;
-    }
-    .company-url a:hover { text-decoration: underline; }
-
-    /* ハンバーガーメニュー内の英語テキストを日本語に置換 */
-    [data-testid="stMainMenu"] ul li:nth-child(1) span { font-size: 0; }
-    [data-testid="stMainMenu"] ul li:nth-child(1) span::after {
-        content: "再実行"; font-size: 14px;
-    }
-    [data-testid="stMainMenu"] ul li:nth-child(2) span { font-size: 0; }
-    [data-testid="stMainMenu"] ul li:nth-child(2) span::after {
-        content: "設定"; font-size: 14px;
-    }
-
-    /* サイドバー幅 */
+    .main-header { font-size: 1.6rem; font-weight: 700; margin-bottom: 0.2rem; }
+    .sub-header { font-size: 0.95rem; color: #666; margin-bottom: 1.5rem; }
     [data-testid="stSidebar"] { min-width: 280px; }
-
-    /* 案件一覧のコンパクト化 */
     [data-testid="stSidebar"] .stButton > button {
-        padding-top: 0.15rem;
-        padding-bottom: 0.15rem;
-        min-height: 0;
-        font-size: 0.78rem;
-        line-height: 1.2;
+        padding-top: 0.15rem; padding-bottom: 0.15rem;
+        min-height: 0; font-size: 0.78rem; line-height: 1.2;
     }
-    .thread-item {
-        font-size: 0.78rem;
-        line-height: 1.2;
-        padding: 3px 0;
-        border-bottom: 1px solid #eee;
-    }
-    .thread-item .thread-date {
-        font-size: 0.65rem;
-        color: #999;
-    }
-
-    /* セクション見出し */
-    .section-header {
-        font-size: 1.2rem;
-        font-weight: 600;
-        margin-top: 1.5rem;
-        margin-bottom: 0.5rem;
-        padding-bottom: 0.3rem;
-        border-bottom: 2px solid #e0e0e0;
-    }
+    .verdict-go { background: #d4edda; color: #155724; padding: 12px 20px;
+                   border-radius: 8px; font-size: 1.3rem; font-weight: 700; }
+    .verdict-cgo { background: #fff3cd; color: #856404; padding: 12px 20px;
+                   border-radius: 8px; font-size: 1.3rem; font-weight: 700; }
+    .verdict-nogo { background: #f8d7da; color: #721c24; padding: 12px 20px;
+                    border-radius: 8px; font-size: 1.3rem; font-weight: 700; }
 </style>
 """,
     unsafe_allow_html=True,
 )
 
 # ---------------------------------------------------------------------------
-# データ永続化 (Google Sheets / ローカルJSONフォールバック)
+# データ永続化 (Google Sheets / ローカルJSON)
 # ---------------------------------------------------------------------------
 DATA_DIR = Path(__file__).parent / "data"
 DATA_DIR.mkdir(exist_ok=True)
@@ -182,40 +109,34 @@ SPREADSHEET_ID = "1Ee5cSvpHTa9qXPAT_uWGBSJ8Gcm_2Wxyj1t9lRfImBA"
 
 
 def _get_gspread_client():
-    """Google Sheets接続クライアントを取得する（キャッシュ付き）"""
     try:
         import gspread
         from google.oauth2.service_account import Credentials
 
-        scopes = [
-            "https://www.googleapis.com/auth/spreadsheets",
-        ]
         creds_info = dict(st.secrets.get("gcp_service_account", {}))
         if not creds_info:
             return None
-        creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
+        creds = Credentials.from_service_account_info(
+            creds_info,
+            scopes=["https://www.googleapis.com/auth/spreadsheets"],
+        )
         return gspread.authorize(creds)
     except Exception:
         return None
 
 
 def _load_threads_from_gsheet() -> dict:
-    """Google Sheetsからスレッドデータを読み込む"""
     gc = _get_gspread_client()
     if gc is None:
         return {}
     try:
-        sh = gc.open_by_key(SPREADSHEET_ID)
-        ws = sh.worksheet("threads")
+        ws = gc.open_by_key(SPREADSHEET_ID).worksheet("threads")
         rows = ws.get_all_values()
-        if len(rows) <= 1:  # ヘッダーのみ
-            return {}
         threads = {}
-        for row in rows[1:]:  # ヘッダーをスキップ
+        for row in rows[1:]:
             if len(row) >= 3 and row[0]:
-                tid = row[0]
                 try:
-                    threads[tid] = json.loads(row[2])
+                    threads[row[0]] = json.loads(row[2])
                 except (json.JSONDecodeError, IndexError):
                     pass
         return threads
@@ -224,39 +145,30 @@ def _load_threads_from_gsheet() -> dict:
 
 
 def _save_thread_to_gsheet(thread_id: str, thread_data: dict) -> bool:
-    """Google Sheetsにスレッドを追加・更新する"""
     gc = _get_gspread_client()
     if gc is None:
         return False
     try:
-        sh = gc.open_by_key(SPREADSHEET_ID)
-        ws = sh.worksheet("threads")
+        ws = gc.open_by_key(SPREADSHEET_ID).worksheet("threads")
         rows = ws.get_all_values()
-
-        company_name = thread_data.get("company_name", "不明")
+        company = thread_data.get("company_name", "不明")
         json_str = json.dumps(thread_data, ensure_ascii=False)
-
-        # 既存行を探す
         for i, row in enumerate(rows[1:], start=2):
             if row[0] == thread_id:
-                ws.update(f"A{i}:C{i}", [[thread_id, company_name, json_str]])
+                ws.update(f"A{i}:C{i}", [[thread_id, company, json_str]])
                 return True
-
-        # 新規追加
-        ws.append_row([thread_id, company_name, json_str], value_input_option="RAW")
+        ws.append_row([thread_id, company, json_str], value_input_option="RAW")
         return True
     except Exception:
         return False
 
 
 def _delete_thread_from_gsheet(thread_id: str) -> bool:
-    """Google Sheetsからスレッドを削除する"""
     gc = _get_gspread_client()
     if gc is None:
         return False
     try:
-        sh = gc.open_by_key(SPREADSHEET_ID)
-        ws = sh.worksheet("threads")
+        ws = gc.open_by_key(SPREADSHEET_ID).worksheet("threads")
         rows = ws.get_all_values()
         for i, row in enumerate(rows[1:], start=2):
             if row[0] == thread_id:
@@ -268,11 +180,9 @@ def _delete_thread_from_gsheet(thread_id: str) -> bool:
 
 
 def _load_threads() -> dict:
-    """スレッドを読み込む（GSheet優先、ローカルフォールバック）"""
     threads = _load_threads_from_gsheet()
     if threads:
         return threads
-    # GSheet接続不可時はローカルJSON
     if THREADS_FILE.exists():
         try:
             return json.loads(THREADS_FILE.read_text(encoding="utf-8"))
@@ -282,176 +192,8 @@ def _load_threads() -> dict:
 
 
 def _save_threads(threads: dict):
-    """全スレッドを保存（ローカルJSON + GSheet個別は呼び出し元で）"""
     THREADS_FILE.write_text(
         json.dumps(threads, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-
-
-def _financial_to_dict(fa: FinancialAnalysis) -> dict:
-    return {
-        "pl_trends": [
-            {
-                "period": p.period, "revenue": p.revenue,
-                "gross_profit": p.gross_profit,
-                "operating_profit": p.operating_profit,
-                "ordinary_profit": p.ordinary_profit,
-                "net_income": p.net_income, "ebitda": p.ebitda, "unit": p.unit,
-            }
-            for p in fa.pl_trends
-        ],
-        "monthly_quarterly_trends": [
-            {
-                "period": m.period, "revenue": m.revenue,
-                "operating_profit": m.operating_profit,
-                "ordinary_profit": m.ordinary_profit,
-                "net_income": m.net_income,
-                "unit": m.unit, "trend_type": m.trend_type,
-            }
-            for m in fa.monthly_quarterly_trends
-        ],
-        "bs_trends": [
-            {
-                "period": b.period, "total_assets": b.total_assets,
-                "total_liabilities": b.total_liabilities,
-                "net_assets": b.net_assets,
-                "cash_and_deposits": b.cash_and_deposits,
-                "interest_bearing_debt": b.interest_bearing_debt, "unit": b.unit,
-            }
-            for b in fa.bs_trends
-        ],
-        "key_metrics": [
-            {"metric_name": km.metric_name, "values": km.values}
-            for km in fa.key_metrics
-        ],
-        "financial_comments": fa.financial_comments,
-    }
-
-
-def _result_to_dict(
-    r: AnalysisResult,
-    extracted_financials: ExtractedFinancials | None = None,
-) -> dict:
-    d = {
-        "company_name": r.company_name,
-        "company_url": r.company_url,
-        "summary": r.summary,
-        "questions": [
-            {
-                "category_code": q.category_code,
-                "category_name": q.category_name,
-                "question": q.question,
-                "intent": q.intent,
-                "background": q.background,
-                "source_documents": q.source_documents,
-                "priority": q.priority,
-                "follow_up_points": q.follow_up_points,
-            }
-            for q in r.questions
-        ],
-        "key_issues": [
-            {
-                "title": ki.title,
-                "description": ki.description,
-                "risk_level": ki.risk_level,
-                "related_categories": ki.related_categories,
-                "ma_risk_implications": ki.ma_risk_implications,
-                "post_merger_solutions": ki.post_merger_solutions,
-            }
-            for ki in r.key_issues
-        ],
-        "financial_analysis": _financial_to_dict(r.financial_analysis),
-        "input_tokens": r.input_tokens,
-        "output_tokens": r.output_tokens,
-        "created_at": datetime.now().isoformat(),
-    }
-    if extracted_financials:
-        d["extracted_financials"] = extracted_financials.to_dict()
-    return d
-
-
-def _dict_to_financial(d: dict) -> FinancialAnalysis:
-    from analyzer import BSTrend, KeyMetric, MonthlyQuarterlyTrend, PLTrend
-
-    fa = d.get("financial_analysis", {})
-    if not fa:
-        return FinancialAnalysis()
-    return FinancialAnalysis(
-        pl_trends=[
-            PLTrend(
-                period=p.get("period", ""), revenue=p.get("revenue"),
-                gross_profit=p.get("gross_profit"),
-                operating_profit=p.get("operating_profit"),
-                ordinary_profit=p.get("ordinary_profit"),
-                net_income=p.get("net_income"), ebitda=p.get("ebitda"),
-                unit=p.get("unit", "千円"),
-            )
-            for p in fa.get("pl_trends", [])
-        ],
-        monthly_quarterly_trends=[
-            MonthlyQuarterlyTrend(
-                period=m.get("period", ""), revenue=m.get("revenue"),
-                operating_profit=m.get("operating_profit"),
-                ordinary_profit=m.get("ordinary_profit"),
-                net_income=m.get("net_income"),
-                unit=m.get("unit", "千円"),
-                trend_type=m.get("trend_type", "monthly"),
-            )
-            for m in fa.get("monthly_quarterly_trends", [])
-        ],
-        bs_trends=[
-            BSTrend(
-                period=b.get("period", ""), total_assets=b.get("total_assets"),
-                total_liabilities=b.get("total_liabilities"),
-                net_assets=b.get("net_assets"),
-                cash_and_deposits=b.get("cash_and_deposits"),
-                interest_bearing_debt=b.get("interest_bearing_debt"),
-                unit=b.get("unit", "千円"),
-            )
-            for b in fa.get("bs_trends", [])
-        ],
-        key_metrics=[
-            KeyMetric(metric_name=km.get("metric_name", ""), values=km.get("values", []))
-            for km in fa.get("key_metrics", [])
-        ],
-        financial_comments=fa.get("financial_comments", ""),
-    )
-
-
-def _dict_to_result(d: dict) -> AnalysisResult:
-    from analyzer import KeyIssue, Question
-
-    return AnalysisResult(
-        company_name=d.get("company_name", ""),
-        company_url=d.get("company_url", ""),
-        summary=d.get("summary", ""),
-        questions=[
-            Question(
-                category_code=q["category_code"],
-                category_name=q["category_name"],
-                question=q["question"],
-                intent=q["intent"],
-                background=q["background"],
-                source_documents=q["source_documents"],
-                priority=q["priority"],
-                follow_up_points=q["follow_up_points"],
-            )
-            for q in d.get("questions", [])
-        ],
-        key_issues=[
-            KeyIssue(
-                title=ki["title"],
-                description=ki["description"],
-                risk_level=ki["risk_level"],
-                related_categories=ki["related_categories"],
-                ma_risk_implications=ki.get("ma_risk_implications", ""),
-                post_merger_solutions=ki.get("post_merger_solutions", ""),
-            )
-            for ki in d.get("key_issues", [])
-        ],
-        financial_analysis=_dict_to_financial(d),
-        input_tokens=d.get("input_tokens", 0),
-        output_tokens=d.get("output_tokens", 0),
     )
 
 
@@ -462,44 +204,41 @@ if "threads" not in st.session_state:
     st.session_state.threads = _load_threads()
 if "current_thread" not in st.session_state:
     st.session_state.current_thread = None
-if "result" not in st.session_state:
-    st.session_state.result = None
-if "extracted_financials" not in st.session_state:
-    st.session_state.extracted_financials = None
 
 # ---------------------------------------------------------------------------
-# サイドバー（API設定 → 案件一覧の順）
+# サイドバー
 # ---------------------------------------------------------------------------
+PROVIDERS = {
+    "Anthropic (Claude)": {
+        "models": ["claude-sonnet-4-20250514", "claude-haiku-4-5-20251001"],
+    },
+    "OpenAI (GPT)": {
+        "models": ["gpt-4o", "gpt-4o-mini"],
+    },
+}
+
 with st.sidebar:
-    # ---- 新規作成ボタン ----
-    if st.button("＋ 新しい案件の分析を作成", use_container_width=True, type="primary"):
+    if st.button("＋ 新しい案件", use_container_width=True, type="primary"):
         st.session_state.current_thread = None
-        st.session_state.result = None
-        st.session_state.extracted_financials = None
         st.rerun()
 
     st.markdown("---")
 
-    # ---- API設定（上に配置）----
     st.markdown("### API設定")
+    provider = st.selectbox("AIプロバイダー", list(PROVIDERS.keys()), index=0)
+    api_key = st.text_input(f"{provider} API Key", type="password")
+    model = st.selectbox("モデル", PROVIDERS[provider]["models"], index=0)
 
-    provider = st.selectbox(
-        "AIプロバイダー",
-        list(PROVIDERS.keys()),
-        index=0,
-    )
-    provider_info = PROVIDERS[provider]
-
-    api_key = st.text_input(
-        f"{provider} API Key",
-        type="password",
-    )
-
-    model = st.selectbox("モデル", provider_info["models"], index=0)
+    with st.expander("買い手プロファイル"):
+        buyer_profile_input = st.text_area(
+            "編集可能",
+            value=DEFAULT_BUYER_PROFILE,
+            height=200,
+            label_visibility="collapsed",
+        )
 
     st.markdown("---")
 
-    # ---- 案件スレッド一覧 ----
     st.markdown("### 案件一覧")
     threads = st.session_state.threads
     if threads:
@@ -510,157 +249,204 @@ with st.sidebar:
         ):
             t = threads[tid]
             label = t.get("company_name", "不明な案件")
-            created_raw = t.get("created_at", "")
-            created_date = created_raw[:10] if created_raw else ""
-            q_count = len(t.get("questions", []))
+            created = t.get("created_at", "")[:10]
             is_active = st.session_state.current_thread == tid
 
             col_sel, col_del = st.columns([5, 1])
             with col_sel:
-                btn_label = f"{'▶ ' if is_active else ''}{label}（{q_count}問）\n{created_date}"
                 if st.button(
-                    btn_label,
-                    key=f"thread_{tid}",
+                    f"{'▶ ' if is_active else ''}{label}\n{created}",
+                    key=f"t_{tid}",
                     use_container_width=True,
                     disabled=is_active,
                 ):
                     st.session_state.current_thread = tid
-                    st.session_state.result = _dict_to_result(t)
-                    ef_data = t.get("extracted_financials")
-                    st.session_state.extracted_financials = (
-                        ExtractedFinancials.from_dict(ef_data) if ef_data else None
-                    )
                     st.rerun()
             with col_del:
-                if st.button("🗑", key=f"del_{tid}", help="この案件を削除"):
+                if st.button("🗑", key=f"d_{tid}", help="削除"):
                     del st.session_state.threads[tid]
                     _save_threads(st.session_state.threads)
                     _delete_thread_from_gsheet(tid)
                     if st.session_state.current_thread == tid:
                         st.session_state.current_thread = None
-                        st.session_state.result = None
-                        st.session_state.extracted_financials = None
                     st.rerun()
     else:
         st.caption("まだ案件がありません")
 
-    st.markdown("---")
-    st.markdown("### 使い方")
-    st.markdown(
-        """
-1. 「新しい案件の分析を作成」をクリック
-2. 資料ファイルをアップロード（最大10件）
-3. 「分析開始」を押す
-4. 結果を確認 → Excelダウンロード
 
-**対応形式**: PDF, Excel, Word, CSV, TSV, PowerPoint, HTML, JSON, テキスト, Markdown, ODS, RTF
-"""
+# ---------------------------------------------------------------------------
+# 結果表示
+# ---------------------------------------------------------------------------
+def _extract_verdict(red_team_text: str) -> str:
+    upper = red_team_text[:500].upper()
+    if "NO-GO" in upper:
+        return "NO-GO"
+    if "CONDITIONAL" in upper:
+        return "CONDITIONAL-GO"
+    if "GO" in upper:
+        return "GO"
+    return ""
+
+
+def _show_result(data: dict):
+    company = data.get("company_name", "不明")
+    st.markdown(f"## 🤖 {company}")
+
+    # Red Team 判定バッジ
+    verdict = _extract_verdict(data.get("red_team", ""))
+    if verdict:
+        css = {"GO": "verdict-go", "CONDITIONAL-GO": "verdict-cgo", "NO-GO": "verdict-nogo"}
+        st.markdown(
+            f'<div class="{css.get(verdict, "")}">&nbsp;Red Team判定: {verdict}</div>',
+            unsafe_allow_html=True,
+        )
+        st.markdown("")
+
+    # トークン
+    in_tok = data.get("total_input_tokens", 0)
+    out_tok = data.get("total_output_tokens", 0)
+    if in_tok or out_tok:
+        st.caption(f"トークン: 入力 {in_tok:,} / 出力 {out_tok:,}")
+
+    # Markdownダウンロード
+    full_md = f"# {company} — M&A Agent Team 分析レポート\n\n"
+    full_md += f"生成日時: {data.get('created_at', '')}\n\n"
+    full_md += "---\n\n# 📋 案件分析\n\n" + data.get("main_analysis", "")
+    full_md += "\n\n---\n\n# 🌐 市場調査\n\n" + data.get("market_research", "")
+    full_md += "\n\n---\n\n# 🔴 Red Team レビュー\n\n" + data.get("red_team", "")
+
+    st.download_button(
+        "📥 レポートをダウンロード (.md)",
+        data=full_md,
+        file_name=f"{company}_Agent分析_{data.get('created_at', '')[:10]}.md",
+        mime="text/markdown",
     )
+
+    # 3タブで表示
+    tab1, tab2, tab3 = st.tabs([
+        "📋 案件分析（IM・財務・DD）",
+        "🌐 市場調査",
+        "🔴 Red Team",
+    ])
+    with tab1:
+        st.markdown(data.get("main_analysis", "*分析結果がありません*"))
+    with tab2:
+        st.markdown(data.get("market_research", "*市場調査結果がありません*"))
+    with tab3:
+        st.markdown(data.get("red_team", "*Red Teamレビューがありません*"))
+
 
 # ---------------------------------------------------------------------------
 # メインエリア
 # ---------------------------------------------------------------------------
-result: AnalysisResult | None = st.session_state.result
 
-# ---- 新規分析画面（スレッド未選択 or 新規作成） ----
-if st.session_state.current_thread is None and result is None:
+# 既存スレッド表示
+if (
+    st.session_state.current_thread
+    and st.session_state.current_thread in st.session_state.threads
+):
+    data = st.session_state.threads[st.session_state.current_thread]
+
+    # v1（旧バージョン）の場合
+    if data.get("version") != 2:
+        st.info(
+            f"**{data.get('company_name', '不明')}** — 旧バージョンの分析結果です。"
+            "「新しい案件」から再分析してください。"
+        )
+    else:
+        _show_result(data)
+
+# 新規分析画面
+else:
     st.markdown(
-        '<p class="main-header">M&A トップ面談 質問ジェネレーター</p>',
+        '<p class="main-header">M&A Agent Team 分析</p>',
         unsafe_allow_html=True,
     )
     st.markdown(
-        '<p class="sub-header">IM・財務諸表・試算表などの資料をアップロードすると、'
-        "トップ面談用の質問リスト・論点を自動生成します</p>",
+        '<p class="sub-header">IM・財務資料をアップロードすると、3つのAIエージェントが'
+        "並列で分析します</p>",
         unsafe_allow_html=True,
     )
 
-    # 対応拡張子から先頭のドットを除いてリスト化
     _upload_types = [ext.lstrip(".") for ext in SUPPORTED_EXTENSIONS]
-
     uploaded_files = st.file_uploader(
         "資料をアップロード（最大10ファイル）",
         type=_upload_types,
         accept_multiple_files=True,
-        help="PDF, Excel, Word, CSV, PowerPoint, HTML, JSON, テキスト等に対応。最大10ファイル。",
+        help="PDF, Excel, Word, CSV, PowerPoint等に対応",
     )
 
     if uploaded_files:
         if len(uploaded_files) > 10:
-            st.error("アップロードは1度に最大10ファイルまでです。ファイルを減らしてください。")
+            st.error("最大10ファイルまでです。")
             st.stop()
 
-        st.markdown(f"**{len(uploaded_files)}件のファイルが選択されています**")
+        st.markdown(f"**{len(uploaded_files)}件** のファイルが選択されています")
 
-        if st.button("🔍 分析開始", type="primary"):
+        if st.button("🚀 Agent Team 分析開始", type="primary"):
             if not api_key:
                 st.error(f"サイドバーで {provider} の API Key を設定してください。")
                 st.stop()
 
             # ファイル解析
             with st.status("資料を解析中...", expanded=True) as status:
-                parsed_docs: list[ParsedDocument] = []
-                raw_files: list[tuple[str, bytes]] = []
+                parsed_docs = []
+                raw_files = []
                 for f in uploaded_files:
-                    st.write(f"📄 {f.name} を解析中...")
+                    st.write(f"📄 {f.name}")
                     file_bytes = f.read()
                     raw_files.append((f.name, file_bytes))
                     doc = parse_file(f.name, file_bytes)
                     parsed_docs.append(doc)
-                    if doc.warnings:
-                        for w in doc.warnings:
-                            st.warning(f"  ⚠ {f.name}: {w}")
+                    for w in doc.warnings:
+                        st.warning(f"  ⚠ {f.name}: {w}")
 
                 valid_docs = [d for d in parsed_docs if d.text.strip()]
                 if not valid_docs:
                     st.error("テキストを抽出できるファイルがありませんでした。")
                     st.stop()
 
-                # 財務CSVから正確なデータを事前抽出
-                fin_data = extract_financial_data(raw_files)
                 fin_summary = extract_financial_summary(raw_files)
-                if fin_data.pl_list or fin_data.bs_list:
-                    st.write(f"📊 財務CSVから P/L {len(fin_data.pl_list)}期分、B/S {len(fin_data.bs_list)}期分を直接抽出しました")
-
-                st.write(f"✅ {len(valid_docs)}/{len(parsed_docs)} 件の資料を正常に解析")
-                status.update(label="資料解析完了", state="complete")
-
-            # LLM分析
-            with st.status(
-                f"{provider} で分析中（1〜2分程度）...", expanded=True
-            ) as status:
-                st.write("質問リスト・論点を生成しています...")
-                try:
-                    new_result = analyze_documents(
-                        api_key=api_key,
-                        documents=valid_docs,
-                        model=model,
-                        provider=provider,
-                        financial_summary=fin_summary,
-                    )
-                except Exception as e:
-                    st.error(f"API呼び出しエラー: {e}")
-                    st.stop()
-                status.update(label="分析完了！", state="complete")
-
-            # LLMの年度ラベルをCSV抽出データに適用
-            if fin_data.pl_list or fin_data.bs_list:
-                llm_fa = new_result.raw_json.get("financial_analysis", {})
-                apply_period_labels_from_llm(
-                    fin_data,
-                    llm_fa.get("pl_trends", []),
-                    llm_fa.get("bs_trends", []),
+                status.update(
+                    label=f"✅ {len(valid_docs)}件の資料を解析完了",
+                    state="complete",
                 )
 
-            # スレッドとして保存
+            # Agent Team 分析
+            with st.status("🤖 Agent Team 分析中...", expanded=True) as status:
+                try:
+                    result = run_full_analysis(
+                        api_key=api_key,
+                        provider=provider,
+                        model=model,
+                        documents=valid_docs,
+                        financial_summary=fin_summary,
+                        buyer_profile=buyer_profile_input,
+                        progress_cb=lambda msg: st.write(msg),
+                    )
+                except Exception as e:
+                    st.error(f"分析エラー: {e}")
+                    st.stop()
+
+                status.update(label="✅ 分析完了!", state="complete")
+
+            # スレッド保存
             thread_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-            thread_data = _result_to_dict(new_result, fin_data)
+            thread_data = {
+                "version": 2,
+                "company_name": result.company_name,
+                "main_analysis": result.main_analysis,
+                "market_research": result.market_research,
+                "red_team": result.red_team,
+                "total_input_tokens": result.total_input_tokens,
+                "total_output_tokens": result.total_output_tokens,
+                "created_at": datetime.now().isoformat(),
+            }
             st.session_state.threads[thread_id] = thread_data
             _save_threads(st.session_state.threads)
             _save_thread_to_gsheet(thread_id, thread_data)
 
             st.session_state.current_thread = thread_id
-            st.session_state.result = new_result
-            st.session_state.extracted_financials = fin_data
             st.rerun()
 
     else:
@@ -669,330 +455,14 @@ if st.session_state.current_thread is None and result is None:
             """
 ### 📎 資料をアップロードして始めましょう
 
-対応しているファイル形式（最大10ファイル）：
-- **PDF** — IM、決算書、会社概要など
-- **Excel** (.xlsx / .xls / .ods) — 財務諸表、試算表、顧客リストなど
-- **Word** (.docx) — 事業計画書、組織図など
-- **CSV / TSV** — 各種データファイル
-- **PowerPoint** (.pptx) — プレゼン資料
-- **HTML** — Webページ保存ファイル
-- **テキスト / Markdown / JSON** — その他テキスト資料
+**3つのAIエージェントが並列で分析します:**
+
+| エージェント | 分析内容 |
+|---|---|
+| 📋 **案件分析** | IM分析、財務分析（感応度・バリュエーション・のれん償却）、DD計画、トップ面談質問 |
+| 🌐 **市場調査** | Web検索による市場規模、M&A動向、競合分析 |
+| 🔴 **Red Team** | 批判的レビュー、Deal Breaker、ダウンサイドシナリオ、GO/NO-GO判定 |
+
+**対応ファイル**: PDF, Excel, Word, CSV, PowerPoint, HTML, JSON, テキスト等
 """
         )
-
-# ---- 結果表示画面（タブなし・縦並び）----
-elif result:
-    import pandas as pd
-
-    def _fmt_number_cols(df: pd.DataFrame) -> pd.DataFrame:
-        """数値列をカンマ区切りフォーマットした文字列に変換"""
-        df_display = df.copy()
-        for col in df_display.columns:
-            if col == "期間":
-                continue
-            try:
-                numeric_vals = pd.to_numeric(df_display[col], errors="coerce")
-                df_display[col] = numeric_vals.apply(
-                    lambda x: f"{int(x):,}" if pd.notna(x) else "-"
-                )
-            except Exception:
-                pass
-        return df_display
-
-    # ---- ヘッダー ----
-    st.markdown(f"## 📊 {result.company_name}")
-    if result.company_url:
-        st.markdown(
-            f'<p class="company-url">🔗 <a href="{result.company_url}" target="_blank">'
-            f"{result.company_url}</a></p>",
-            unsafe_allow_html=True,
-        )
-
-    st.markdown(
-        f"**質問数**: {len(result.questions)}問 / "
-        f"**主要論点**: {len(result.key_issues)}件 / "
-        f"**トークン使用量**: 入力 {result.input_tokens:,} / 出力 {result.output_tokens:,}"
-    )
-
-    # Excelダウンロード
-    excel_bytes = export_to_excel(result, st.session_state.get("extracted_financials"))
-    fname = f"{result.company_name}_トップ面談質問_{datetime.now().strftime('%Y%m%d')}.xlsx"
-    st.download_button(
-        label="📥 Excelダウンロード",
-        data=excel_bytes,
-        file_name=fname,
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        type="primary",
-    )
-
-    # ==================================================================
-    # 1. 企業サマリー
-    # ==================================================================
-    st.markdown("---")
-    st.markdown("### 🏢 企業サマリー")
-    st.markdown(result.summary)
-
-    # ==================================================================
-    # 2. 財務分析
-    # ==================================================================
-    st.markdown("---")
-    st.markdown("### 📈 財務分析")
-
-    fa = result.financial_analysis
-    ef: ExtractedFinancials | None = st.session_state.get("extracted_financials")
-
-    has_csv_data = ef and (ef.pl_list or ef.bs_list)
-    has_llm_pl = bool(fa.pl_trends)
-    has_llm_bs = bool(fa.bs_trends)
-    has_any_financial = has_csv_data or has_llm_pl or has_llm_bs or fa.key_metrics or fa.financial_comments
-
-    if not has_any_financial:
-        st.info("財務データが資料から抽出できませんでした。財務諸表・試算表を含む資料をアップロードすると、ここに財務分析が表示されます。")
-    else:
-        # --- 財務コメント (LLM) ---
-        if fa.financial_comments:
-            st.markdown("#### 財務分析サマリー")
-            st.info(fa.financial_comments)
-
-        # =========================================================
-        # P/L表示: CSV直接データ優先 → なければLLMデータをフォールバック
-        # =========================================================
-        if has_csv_data and ef.pl_list:
-            # --- CSV直接データ ---
-            st.markdown("#### 業績推移（P/L）")
-            st.caption(f"CSVから直接抽出（{len(ef.pl_list)}期分）・単位: 円")
-            pl_data = []
-            for pl in ef.pl_list:
-                row: dict = {"期間": pl.period_label}
-                row["売上高"] = pl.revenue
-                row["売上総利益"] = pl.gross_profit
-                if pl.revenue and pl.revenue > 0:
-                    row["粗利率"] = f"{pl.gross_profit / pl.revenue * 100:.1f}%" if pl.gross_profit is not None else "-"
-                else:
-                    row["粗利率"] = "-"
-                row["営業利益"] = pl.operating_profit
-                if pl.revenue and pl.revenue > 0:
-                    row["営業利益率"] = f"{pl.operating_profit / pl.revenue * 100:.1f}%" if pl.operating_profit is not None else "-"
-                else:
-                    row["営業利益率"] = "-"
-                row["経常利益"] = pl.ordinary_profit
-                row["当期純利益"] = pl.net_income
-                pl_data.append(row)
-            df_pl = pd.DataFrame(pl_data)
-            rate_cols = ["粗利率", "営業利益率"]
-            df_display = _fmt_number_cols(df_pl.drop(columns=rate_cols, errors="ignore"))
-            for rc in rate_cols:
-                if rc in df_pl.columns:
-                    df_display[rc] = df_pl[rc]
-            st.dataframe(df_display, use_container_width=True, hide_index=True)
-
-            # 売上高グラフ
-            if df_pl["売上高"].notna().any():
-                st.markdown("**売上高推移**")
-                label_parts = []
-                for _, r in df_pl.iterrows():
-                    v = r["売上高"]
-                    if pd.notna(v) and v:
-                        label_parts.append(f"{r['期間']}: **{int(v):,}円**")
-                if label_parts:
-                    st.caption("　|　".join(label_parts))
-                df_rev = df_pl[["期間", "売上高"]].copy()
-                df_rev["売上高"] = pd.to_numeric(df_rev["売上高"], errors="coerce")
-                st.bar_chart(df_rev.set_index("期間"))
-
-            # 営業利益グラフ
-            if df_pl["営業利益"].notna().any():
-                st.markdown("**営業利益推移**")
-                label_parts = []
-                for _, r in df_pl.iterrows():
-                    v = r["営業利益"]
-                    if pd.notna(v) and v:
-                        label_parts.append(f"{r['期間']}: **{int(v):,}円**")
-                if label_parts:
-                    st.caption("　|　".join(label_parts))
-                df_op = df_pl[["期間", "営業利益"]].copy()
-                df_op["営業利益"] = pd.to_numeric(df_op["営業利益"], errors="coerce")
-                st.bar_chart(df_op.set_index("期間"))
-
-        elif has_llm_pl:
-            # --- LLMフォールバック（IMから読み取った財務データ）---
-            st.markdown("#### 業績推移（P/L）")
-            unit = fa.pl_trends[0].unit if fa.pl_trends else "千円"
-            st.caption(f"IM等の資料からLLMが抽出（{len(fa.pl_trends)}期分）・単位: {unit}")
-            pl_data = []
-            for p in fa.pl_trends:
-                row: dict = {"期間": p.period}
-                row["売上高"] = p.revenue
-                row["売上総利益"] = p.gross_profit
-                if p.revenue and p.revenue > 0:
-                    row["粗利率"] = f"{p.gross_profit / p.revenue * 100:.1f}%" if p.gross_profit is not None else "-"
-                else:
-                    row["粗利率"] = "-"
-                row["営業利益"] = p.operating_profit
-                if p.revenue and p.revenue > 0:
-                    row["営業利益率"] = f"{p.operating_profit / p.revenue * 100:.1f}%" if p.operating_profit is not None else "-"
-                else:
-                    row["営業利益率"] = "-"
-                row["経常利益"] = p.ordinary_profit
-                row["当期純利益"] = p.net_income
-                pl_data.append(row)
-            df_pl = pd.DataFrame(pl_data)
-            rate_cols = ["粗利率", "営業利益率"]
-            df_display = _fmt_number_cols(df_pl.drop(columns=rate_cols, errors="ignore"))
-            for rc in rate_cols:
-                if rc in df_pl.columns:
-                    df_display[rc] = df_pl[rc]
-            st.dataframe(df_display, use_container_width=True, hide_index=True)
-
-            # 売上高グラフ
-            if df_pl["売上高"].notna().any():
-                st.markdown("**売上高推移**")
-                label_parts = []
-                for _, r in df_pl.iterrows():
-                    v = r["売上高"]
-                    if pd.notna(v) and v:
-                        label_parts.append(f"{r['期間']}: **{int(v):,}{unit}**")
-                if label_parts:
-                    st.caption("　|　".join(label_parts))
-                df_rev = df_pl[["期間", "売上高"]].copy()
-                df_rev["売上高"] = pd.to_numeric(df_rev["売上高"], errors="coerce")
-                st.bar_chart(df_rev.set_index("期間"))
-
-            # 営業利益グラフ
-            if df_pl["営業利益"].notna().any():
-                st.markdown("**営業利益推移**")
-                label_parts = []
-                for _, r in df_pl.iterrows():
-                    v = r["営業利益"]
-                    if pd.notna(v) and v:
-                        label_parts.append(f"{r['期間']}: **{int(v):,}{unit}**")
-                if label_parts:
-                    st.caption("　|　".join(label_parts))
-                df_op = df_pl[["期間", "営業利益"]].copy()
-                df_op["営業利益"] = pd.to_numeric(df_op["営業利益"], errors="coerce")
-                st.bar_chart(df_op.set_index("期間"))
-
-        # =========================================================
-        # BS表示: CSV直接データ優先 → なければLLMデータをフォールバック
-        # =========================================================
-        if has_csv_data and ef.bs_list:
-            st.markdown("#### BS推移（貸借対照表）")
-            st.caption(f"CSVから直接抽出（{len(ef.bs_list)}期分）・単位: 円")
-            bs_data = []
-            for bs in ef.bs_list:
-                row: dict = {"期間": bs.period_label}
-                row["総資産"] = bs.total_assets
-                row["負債合計"] = bs.total_liabilities
-                row["純資産"] = bs.net_assets
-                row["現預金"] = bs.cash
-                row["有利子負債"] = bs.interest_bearing_debt
-                bs_data.append(row)
-            df_bs = pd.DataFrame(bs_data)
-            st.dataframe(_fmt_number_cols(df_bs), use_container_width=True, hide_index=True)
-
-        elif has_llm_bs:
-            st.markdown("#### BS推移（貸借対照表）")
-            unit = fa.bs_trends[0].unit if fa.bs_trends else "千円"
-            st.caption(f"IM等の資料からLLMが抽出（{len(fa.bs_trends)}期分）・単位: {unit}")
-            bs_data = []
-            for b in fa.bs_trends:
-                bs_data.append({
-                    "期間": b.period,
-                    "総資産": b.total_assets,
-                    "負債合計": b.total_liabilities,
-                    "純資産": b.net_assets,
-                    "現預金": b.cash_and_deposits,
-                    "有利子負債": b.interest_bearing_debt,
-                })
-            df_bs = pd.DataFrame(bs_data)
-            st.dataframe(_fmt_number_cols(df_bs), use_container_width=True, hide_index=True)
-
-        # --- 主要財務指標 (LLM) ---
-        if fa.key_metrics:
-            st.markdown("#### 主要財務指標")
-            for km in fa.key_metrics:
-                if km.values:
-                    metric_data = []
-                    for v in km.values:
-                        metric_data.append({
-                            "期間": v.get("period", ""),
-                            km.metric_name: v.get("value", ""),
-                        })
-                    df_km = pd.DataFrame(metric_data)
-                    st.markdown(f"**{km.metric_name}**")
-                    st.dataframe(df_km, use_container_width=True, hide_index=True)
-
-    # ==================================================================
-    # 3. 主要論点・リスク
-    # ==================================================================
-    st.markdown("---")
-    st.markdown("### ⚠️ 主要論点・リスク")
-    st.markdown(f"**{len(result.key_issues)}件** の主要論点・リスクを特定")
-    for i, ki in enumerate(result.key_issues, 1):
-        risk_label = {"high": "🔴 高", "medium": "🟡 中", "low": "🟢 低"}.get(
-            ki.risk_level, ki.risk_level
-        )
-        with st.expander(
-            f"{risk_label} | {i}. {ki.title}",
-            expanded=(ki.risk_level == "high"),
-        ):
-            st.markdown("**概要・詳細**")
-            st.markdown(ki.description)
-            if ki.ma_risk_implications:
-                st.markdown("---")
-                st.markdown("**M&Aリスクへの影響**")
-                st.markdown(ki.ma_risk_implications)
-            if ki.post_merger_solutions:
-                st.markdown("---")
-                st.markdown("**買収後の対策・解決策**")
-                st.markdown(ki.post_merger_solutions)
-            if ki.related_categories:
-                st.markdown("---")
-                st.markdown(
-                    f"**関連カテゴリ**: {', '.join(ki.related_categories)}"
-                )
-
-    # ==================================================================
-    # 4. 質問リスト
-    # ==================================================================
-    st.markdown("---")
-    st.markdown("### 💬 質問リスト")
-
-    all_cats = sorted(set(q.category_name for q in result.questions))
-    selected_cats = st.multiselect("カテゴリで絞り込み", all_cats, default=all_cats)
-    priority_filter = st.multiselect(
-        "優先度で絞り込み", ["A", "B", "C"], default=["A", "B", "C"]
-    )
-
-    filtered = [
-        q
-        for q in result.questions
-        if q.category_name in selected_cats and q.priority in priority_filter
-    ]
-
-    priority_order = {"A": 0, "B": 1, "C": 2}
-    filtered.sort(
-        key=lambda q: (priority_order.get(q.priority, 3), q.category_code)
-    )
-
-    priority_labels = {"A": "🔴 優先度A（必須確認）", "B": "🟡 優先度B（重要）", "C": "🟢 優先度C（補足）"}
-    current_priority = ""
-    for i, q in enumerate(filtered, 1):
-        if q.priority != current_priority:
-            current_priority = q.priority
-            st.markdown(f"#### {priority_labels.get(q.priority, q.priority)}")
-
-        with st.expander(
-            f"Q{i}. [{q.category_code}] {q.question[:80]}{'...' if len(q.question) > 80 else ''}",
-            expanded=(q.priority == "A"),
-        ):
-            st.markdown(f"**カテゴリ**: {q.category_name}")
-            st.markdown(f"**質問**: {q.question}")
-            st.markdown(f"**意図**: {q.intent}")
-            st.markdown(f"**背景**: {q.background}")
-            if q.source_documents:
-                st.markdown(f"**関連資料**: {', '.join(q.source_documents)}")
-            if q.follow_up_points:
-                st.markdown("**フォローアップ**:")
-                for fp in q.follow_up_points:
-                    st.markdown(f"  - {fp}")
