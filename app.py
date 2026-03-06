@@ -80,19 +80,38 @@ if not _check_password():
 st.markdown(
     """
 <style>
-    .main-header { font-size: 1.6rem; font-weight: 700; margin-bottom: 0.2rem; }
-    .sub-header { font-size: 0.95rem; color: #666; margin-bottom: 1.5rem; }
+    .main-header { font-size: 1.8rem; font-weight: 800; margin-bottom: 0.2rem; }
+    .sub-header { font-size: 0.95rem; color: #888; margin-bottom: 1.5rem; }
     [data-testid="stSidebar"] { min-width: 280px; }
     [data-testid="stSidebar"] .stButton > button {
         padding-top: 0.15rem; padding-bottom: 0.15rem;
         min-height: 0; font-size: 0.78rem; line-height: 1.2;
     }
-    .verdict-go { background: #d4edda; color: #155724; padding: 12px 20px;
-                   border-radius: 8px; font-size: 1.3rem; font-weight: 700; }
-    .verdict-cgo { background: #fff3cd; color: #856404; padding: 12px 20px;
-                   border-radius: 8px; font-size: 1.3rem; font-weight: 700; }
-    .verdict-nogo { background: #f8d7da; color: #721c24; padding: 12px 20px;
-                    border-radius: 8px; font-size: 1.3rem; font-weight: 700; }
+    /* 判定バッジ */
+    .verdict-go { background: linear-gradient(135deg, #d4edda, #c3e6cb); color: #155724;
+                   padding: 16px 24px; border-radius: 12px; font-size: 1.4rem;
+                   font-weight: 800; border-left: 5px solid #28a745;
+                   box-shadow: 0 2px 8px rgba(40,167,69,0.15); }
+    .verdict-cgo { background: linear-gradient(135deg, #fff3cd, #ffeaa7); color: #856404;
+                   padding: 16px 24px; border-radius: 12px; font-size: 1.4rem;
+                   font-weight: 800; border-left: 5px solid #ffc107;
+                   box-shadow: 0 2px 8px rgba(255,193,7,0.15); }
+    .verdict-nogo { background: linear-gradient(135deg, #f8d7da, #f5c6cb); color: #721c24;
+                    padding: 16px 24px; border-radius: 12px; font-size: 1.4rem;
+                    font-weight: 800; border-left: 5px solid #dc3545;
+                    box-shadow: 0 2px 8px rgba(220,53,69,0.15); }
+    /* タブ */
+    .stTabs [data-baseweb="tab-list"] { gap: 8px; }
+    .stTabs [data-baseweb="tab"] {
+        padding: 10px 20px; border-radius: 8px 8px 0 0; font-weight: 600;
+    }
+    /* ランディングカード */
+    .agent-card {
+        background: #f8f9fa; border-radius: 12px; padding: 20px 24px;
+        border: 1px solid #e9ecef; margin-bottom: 12px;
+    }
+    .agent-card h4 { margin: 0 0 6px 0; font-size: 1.05rem; }
+    .agent-card p { margin: 0; color: #666; font-size: 0.9rem; }
 </style>
 """,
     unsafe_allow_html=True,
@@ -290,28 +309,34 @@ def _extract_verdict(red_team_text: str) -> str:
 
 def _show_result(data: dict):
     company = data.get("company_name", "不明")
-    st.markdown(f"## 🤖 {company}")
+    created = data.get("created_at", "")[:10]
 
-    # Red Team 判定バッジ
+    # ヘッダー行: 企業名 + 判定バッジ
     verdict = _extract_verdict(data.get("red_team", ""))
+    emoji_map = {"GO": "🟢", "CONDITIONAL-GO": "🟡", "NO-GO": "🔴"}
+    css_map = {"GO": "verdict-go", "CONDITIONAL-GO": "verdict-cgo", "NO-GO": "verdict-nogo"}
+
+    st.markdown(f"## {company}")
+    st.caption(f"分析日: {created}")
+
     if verdict:
-        css = {"GO": "verdict-go", "CONDITIONAL-GO": "verdict-cgo", "NO-GO": "verdict-nogo"}
         st.markdown(
-            f'<div class="{css.get(verdict, "")}">&nbsp;Red Team判定: {verdict}</div>',
+            f'<div class="{css_map.get(verdict, "")}">'
+            f'{emoji_map.get(verdict, "")} Red Team判定: {verdict}</div>',
             unsafe_allow_html=True,
         )
         st.markdown("")
 
-    # トークン
+    # トークン情報（折りたたみ）
     in_tok = data.get("total_input_tokens", 0)
     out_tok = data.get("total_output_tokens", 0)
     if in_tok or out_tok:
-        st.caption(f"トークン: 入力 {in_tok:,} / 出力 {out_tok:,}")
+        st.caption(f"💬 トークン: 入力 {in_tok:,} / 出力 {out_tok:,}")
 
     # Markdownダウンロード
     full_md = f"# {company} — M&A Agent Team 分析レポート\n\n"
     full_md += f"生成日時: {data.get('created_at', '')}\n\n"
-    full_md += "---\n\n# 📋 案件分析\n\n" + data.get("main_analysis", "")
+    full_md += "---\n\n# 📋 案件分析・財務\n\n" + data.get("main_analysis", "")
     full_md += "\n\n---\n\n# 🌐 市場調査\n\n" + data.get("market_research", "")
     full_md += "\n\n---\n\n# 🔴 Red Team レビュー\n\n" + data.get("red_team", "")
 
@@ -324,7 +349,7 @@ def _show_result(data: dict):
 
     # 3タブで表示
     tab1, tab2, tab3 = st.tabs([
-        "📋 案件分析（IM・財務・DD）",
+        "📋 案件分析・財務",
         "🌐 市場調査",
         "🔴 Red Team",
     ])
@@ -451,18 +476,33 @@ else:
 
     else:
         st.markdown("---")
-        st.markdown(
-            """
-### 📎 資料をアップロードして始めましょう
+        st.markdown("### 📎 資料をアップロードして始めましょう")
+        st.markdown("")
 
-**3つのAIエージェントが並列で分析します:**
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.markdown(
+                '<div class="agent-card">'
+                "<h4>📋 案件分析・財務</h4>"
+                "<p>IM分析、バリュエーション試算（EBITDA×3-5x＋純資産）、のれん償却、トップ面談質問</p>"
+                "</div>",
+                unsafe_allow_html=True,
+            )
+        with col2:
+            st.markdown(
+                '<div class="agent-card">'
+                "<h4>🌐 市場調査</h4>"
+                "<p>Web検索による市場規模・成長率、M&A動向、競合環境の分析</p>"
+                "</div>",
+                unsafe_allow_html=True,
+            )
+        with col3:
+            st.markdown(
+                '<div class="agent-card">'
+                "<h4>🔴 Red Team</h4>"
+                "<p>Deal Breaker分析、ダウンサイドシナリオ、GO/CONDITIONAL-GO/NO-GO判定</p>"
+                "</div>",
+                unsafe_allow_html=True,
+            )
 
-| エージェント | 分析内容 |
-|---|---|
-| 📋 **案件分析** | IM分析、財務分析（感応度・バリュエーション・のれん償却）、DD計画、トップ面談質問 |
-| 🌐 **市場調査** | Web検索による市場規模、M&A動向、競合分析 |
-| 🔴 **Red Team** | 批判的レビュー、Deal Breaker、ダウンサイドシナリオ、GO/NO-GO判定 |
-
-**対応ファイル**: PDF, Excel, Word, CSV, PowerPoint, HTML, JSON, テキスト等
-"""
-        )
+        st.caption("対応ファイル: PDF, Excel, Word, CSV, PowerPoint, HTML, JSON, テキスト等")
